@@ -185,9 +185,11 @@ class Rag:
         if not m:
             return []
         rows = self._q(
-            "SELECT id, text, bm25(docs) AS s FROM docs WHERE docs MATCH ? ORDER BY rank LIMIT ?", (m, n)
+            "SELECT id, text, bm25(docs) AS s, snippet(docs, 1, '[', ']', ' … ', 10) FROM docs WHERE docs MATCH ? ORDER BY rank LIMIT ?",
+            (m, n),
         )
-        return [{"id": r[0], "text": r[1], "score": -r[2]} for r in rows]  # bm25 is negative; flip it
+        # bm25 is negative; flip it. snip = window around the match, not the doc's first line.
+        return [{"id": r[0], "text": r[1], "score": -r[2], "snip": r[3]} for r in rows]
 
     def search(self, query, k=10):
         """Recipe 1: full-text search only. Zero cost, ~ms, debuggable, no chunking."""
@@ -497,7 +499,7 @@ def main(argv=None):
     for h in hits:
         extra = f" [{h['sub_query']}]" if "sub_query" in h else ""
         score = h.get("sem", h.get("score", 0.0))
-        print(f"{score:+.4f}  {h['id']}{extra}  {h['text'][:70].replace(chr(10), ' ')}")
+        print(f"{score:+.4f}  {h['id']}{extra}  {(h.get('snip') or h['text'][:70]).replace(chr(10), ' ')}")
     return 0
 
 
