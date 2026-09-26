@@ -12,10 +12,15 @@ touches:
 
 Resolution order everywhere: CLI flag > env var > rag.json > default.
 """
+import base64
 import json
 import os
+import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,6 +87,32 @@ TEXT_EXT = {".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".html"
 SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules"}
 SKIP_FILES = {"rag.db", "rag.json", "glossary.txt"}
 
+# --------------------------------------------------------------------------- vision
+# Images become searchable text through the LLM's own vision capability — no OCR
+# package, no extra dependency. The base64 payload is passed through llm() as an
+# OpenAI content block (type: "image_url"); llm() forwards messages to the
+# endpoint unmodified, so any vision model the user pointed it at already works.
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+IMAGE_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
+    ".tif": "image/tiff", ".tiff": "image/tiff",
+}
+VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".m4v"}
+MAX_IMAGE_BYTES = 20 * 1024 * 1024   # 20 MB: enough for phone photos, small enough
+                                       # to base64 into a single request
+VISION_MAX_TOKENS = 2048              # long OCR plus a scene description
+VISION_TIMEOUT = 120                  # seconds per vision call
+MAX_VIDEO_FRAMES = 12                 # frames sampled from a video, evenly spaced
+VISION_PROMPT = (
+    "You transcribe and describe an image for a search index. First, transcribe all "
+    "legible text exactly, keeping its wording and language. Then, in plain keywords, "
+    "describe the visual content: objects, places, people, actions, and any text on "
+    "signs or documents. Use only what is in the image; if there is no readable text, "
+    "say 'no readable text' briefly and describe the scene. Do not add outside "
+    "knowledge."
+)
+
 
 class ExtractError(Exception):
     pass
@@ -111,7 +142,135 @@ def extract(path):
             return "\n".join(p.text for p in docx.Document(path).paragraphs)
         except Exception as e:
             raise ExtractError(f"could not read {path}: {e}") from None
+    if ext in IMAGE_EXT:
+        return describe_image(path)
+    if ext in VIDEO_EXT:
+        return describe_video(path)
     raise ExtractError(f"unsupported format: {ext or '(no extension)'}")
+
+
+def describe_image(path):
+    """Image -> text via the LLM's vision capability. Raises ExtractError with an
+    actionable message when the LLM is unreachable or lacks vision support — the
+    image is never silently dropped and never padded with invented text."""
+    p = Path(path)
+    size = p.stat().st_size
+    if size == 0:
+        raise ExtractError(f"image {p.name} is empty — skipping")
+    if size > MAX_IMAGE_BYTES:
+        mb = size / 1024 / 1024
+        cap = MAX_IMAGE_BYTES / 1024 / 1024
+        raise ExtractError(
+            f"image {p.name} is {mb:.0f} MB (>{cap:.0f} MB vision cap) — too large; "
+            "resize it before running rag add"
+        )
+    data = p.read_bytes()
+    mime = IMAGE_MIME[p.suffix.lower()]
+    messages = [
+        {"role": "system", "content": VISION_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text",
+                 "text": "Transcribe and describe this image for a search index."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"},
+                },
+            ],
+        },
+    ]
+    text = rag.llm(messages, max_tokens=VISION_MAX_TOKENS, timeout=VISION_TIMEOUT)
+    if not text:
+        raise ExtractError(
+            f"could not read image {p.name}: the LLM returned no text — your model may "
+            "not support vision, or the endpoint is unreachable. Run: rag doctor"
+        )
+    return text.strip()
+
+
+def _video_duration(path):
+    """Seconds via ffprobe's metadata (fast — no decode). None if unknown or
+    ffprobe is missing."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=20,
+        )
+        text = (out.stdout or "").strip()
+        return float(text) if text else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
+def _frames_from_video(path, outd, n):
+    """Extract ~n evenly spaced frames to outd with ffmpeg. Returns None when
+    ffmpeg is missing, otherwise a list of frame paths (possibly empty). Frames
+    are scaled to a 1280px width so each vision payload stays small."""
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None  # ffmpeg absent/hung — the caller raises the install hint
+    dur = _video_duration(path)
+    if dur and n > 1:
+        fps = max((n - 1) / dur, 1.0 / 3600.0)  # even spread; never slower than ~1 frame/hour
+    else:
+        # No ffprobe duration available: sample from the start. A 2-minute listing
+        # clip still yields 12 frames across the first ~24s; full even spacing needs
+        # ffprobe (bundled with ffmpeg in any normal install).
+        fps = 0.5
+    vf = "fps=%s,scale=1280:-1" % round(fps, 4)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+             "-vf", vf, "-frames:v", str(n), "-f", "image2", "-y",
+             str(outd / "frame_%03d.png")],
+            capture_output=True, text=True, timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    return sorted(outd.glob("frame_*.png"))
+
+
+def describe_video(path):
+    """Video -> text: sample evenly spaced frames with ffmpeg and describe each via
+    vision. Raises ExtractError (with the ffmpeg install hint) when frames can't be
+    produced, or when the LLM can't read any frame."""
+    p = Path(path)
+    if p.stat().st_size == 0:
+        raise ExtractError(f"video {p.name} is empty — skipping")
+    print(f"[video] {p.name}: sampling up to {MAX_VIDEO_FRAMES} frames via ffmpeg…",
+          file=sys.stdout)
+    outd = Path(tempfile.mkdtemp(prefix="ragvid_"))
+    try:
+        frames = _frames_from_video(path, outd, MAX_VIDEO_FRAMES)
+        if frames is None:
+            raise ExtractError(
+                f"video {p.name} needs ffmpeg to extract frames — install it "
+                "(apt install ffmpeg / brew install ffmpeg / choco install ffmpeg) "
+                "and re-run rag add"
+            )
+        if not frames:
+            raise ExtractError(
+                f"video {p.name}: ffmpeg produced no frames — unreadable file"
+            )
+        parts = []
+        for f in frames:
+            try:
+                t = describe_image(str(f))
+                if t:
+                    parts.append(t)
+            except ExtractError:
+                pass
+        if not parts:
+            raise ExtractError(
+                f"video {p.name}: the LLM returned no text for any frame — run rag "
+                "doctor to check that the model supports vision"
+            )
+        return "\n\n".join(parts)
+    finally:
+        shutil.rmtree(outd, ignore_errors=True)
 
 
 def walk(paths, corpus):
@@ -277,6 +436,14 @@ def doctor(flag_path=None, db_flag=None):
             print(f"{ext}:       {mod} available")
         except ImportError:
             print(f"{ext}:       needs {pip} — run: uv add {pip}")
+    # ffmpeg is a system binary (no pip) — it powers video frame extraction
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        print("ffmpeg:     available (needed for video)")
+    except (OSError, subprocess.TimeoutExpired):
+        print("ffmpeg:     not found (needed for video) — "
+              "install it (apt install ffmpeg / brew install ffmpeg)")
+    print("images:     read via LLM vision; a text-only model is skipped, never guessed")
     if os.path.exists(db):
         print(f"corpus:     {len(Rag(db=db).doc_ids())} documents in {db}")
     else:
@@ -349,7 +516,8 @@ def _main(argv=None):
     sub.add_parser("doctor", help="check config, endpoint, extractors, corpus")
 
     for name in ("add", "index"):  # `index` kept as an alias: old README muscle memory
-        a = sub.add_parser(name, help="index files or folders (recursive)")
+        a = sub.add_parser(name, help="index files or folders (recursive; images via "
+                                     "LLM vision, video via ffmpeg frames)")
         a.add_argument("paths", nargs="+")
 
     for name in ("search", "hybrid", "multi", "hot"):

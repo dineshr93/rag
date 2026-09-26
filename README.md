@@ -7,7 +7,7 @@ climbs the ladder and stops where the problem is already solved.
 **Start here. Four commands do the whole job:**
 
     rag init          # choose your model backend — writes rag.json
-    rag add <folder>  # index PDFs, DOCX, markdown, text (recursive)
+    rag add <folder>  # index PDFs, DOCX, markdown, text, images (vision), video
     rag serve         # open the browser UI, ask questions, get cited answers
     rag doctor        # when something doesn't work
 
@@ -21,8 +21,32 @@ invents one — that is the whole point for legal and contract work.
     uv sync --extra docs       # adds pypdf + python-docx, for PDF/DOCX folders
     uv tool install -e .       # then `rag` is a standalone command
 
+No new pip dependency for images: each photo is read through your LLM's vision
+capability. Video needs the `ffmpeg` system binary (no pip) — see "Image and video".
+
 Without `--extra docs`, `rag add` still works for `.txt .md .csv .json .html`
 and tells you the exact install command when it meets a PDF.
+
+## Image and video
+
+Photos in a listing folder are usually the actual content. `rag add` sends each
+image through `llm()` as an OpenAI `image_url` content block and stores the
+transcription plus a scene description for search — the citation is the file path,
+so an answer quoting a photo traces back to it. No extra pip dependency; your
+`llm_model` just needs vision.
+
+- **Images** (`.jpg .jpeg .png .webp .gif .bmp .tif .tiff`) — need a **vision-capable**
+  `llm_model` (e.g. `gpt-4o-mini`). A text-only model is skipped with a clear
+  message and never filled with guessed text.
+- **Video** (`.mp4 .mov .avi .mkv .webm .flv .m4v`) — needs `ffmpeg`. Up to
+  `MAX_VIDEO_FRAMES` (12) evenly spaced frames are extracted, each described via
+  vision and joined. This is the most expensive part of `rag add`: one vision
+  call per frame.
+- **Size** — a 20 MB per-image cap (`MAX_IMAGE_BYTES`); resize oversized files
+  before indexing.
+
+`rag doctor` reports whether `ffmpeg` is present and which `llm_model` is resolved
+— confirm that model has vision before adding photo folders.
 
 ## Which model to use
 
@@ -105,7 +129,7 @@ Two modules split at the engine/app seam:
 - `rag.py` — engine: BM25 retrieval, LLM/embed clients, whole-document storage,
   answer synthesis, `recommend()`.
 - `ragcli.py` — app layer: config, ingestion, CLI, browser UI.
-- `test_rag.py` — 22 runnable checks, no pytest, no network. `uv run test_rag.py`.
+- `test_rag.py` — 26 runnable checks, no pytest, no network. `uv run test_rag.py`.
 
 One SQLite file. Documents are stored **whole** — no chunking, no chunk-size or
 overlap decisions, no eval harness for chunks (recipe 1's whole point). A `meta`

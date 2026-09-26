@@ -340,6 +340,63 @@ def test_cli_doctor_dead_endpoint():
     assert "unreachable" in buf.getvalue().lower()
 
 
+def test_image_added_with_vision():
+    """A vision-capable model turns a photo into indexed, searchable text."""
+    import rag
+    import ragcli
+
+    d = _tmpdir()
+    photos = os.path.join(d, "photos")
+    os.makedirs(photos)
+    with open(os.path.join(photos, "living-room.jpg"), "wb") as f:
+        f.write(b"\xff\xd8\xff\x00")  # JPEG SOI header; the bytes content is
+                                      # irrelevant — the LLM (stubbed) reads it
+    cfg = os.path.join(d, "rag.json")
+    db = os.path.join(d, "t.db")
+    orig = rag.llm
+    try:
+        rag.llm = lambda *a, **kw: "Living room with a large window and a garden view."
+        assert ragcli.main(["--corpus", d, "--config", cfg, "--db", db,
+                            "add", photos]) == 0
+    finally:
+        rag.llm = orig
+    r = Rag(db=db)
+    ids = r.doc_ids()
+    assert "photos/living-room.jpg" in ids, ids
+    assert "garden" in r.doc("photos/living-room.jpg"), \
+        r.doc("photos/living-room.jpg")
+
+
+def test_image_skipped_when_llm_down():
+    """With no reachable model (the test env's dead port), images are skipped with
+    a clear message and never silently stored — text docs in the same folder still
+    get indexed (one bad file must not kill the batch)."""
+    import contextlib
+    import io
+    import ragcli
+
+    d = _tmpdir()
+    photos = os.path.join(d, "photos")
+    os.makedirs(photos)
+    with open(os.path.join(photos, "a.jpg"), "wb") as f:
+        f.write(b"\xff\xd8\xff\x00")
+    with open(os.path.join(photos, "notes.txt"), "w") as f:
+        f.write("invoice 12345")
+    cfg = os.path.join(d, "rag.json")
+    db = os.path.join(d, "t.db")
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        code = ragcli.main(["--corpus", d, "--config", cfg, "--db", db,
+                            "add", photos])
+    assert code == 0, code
+    out = buf.getvalue()
+    assert "a.jpg" in out and "skip:" in out, out
+    r = Rag(db=db)
+    ids = r.doc_ids()
+    assert "photos/a.jpg" not in ids, ids
+    assert "photos/notes.txt" in ids, ids
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
