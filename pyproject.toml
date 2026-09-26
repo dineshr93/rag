@@ -11,8 +11,11 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.optional-dependencies]
+docs = ["pypdf>=4", "python-docx>=1"]
+
 [tool.setuptools]
-py-modules = ["rag"]
+py-modules = ["rag", "ragcli"]
 
 [project.scripts]
-rag = "rag:main"
+rag = "ragcli:main"

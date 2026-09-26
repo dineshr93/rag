@@ -107,6 +107,239 @@ def test_decision_tree():
     assert recommend(has_search=True, complaint="not great", latency_ok=False)["recipe"] == 2
 
 
+# ------------------------------------------------------------------- new: config, ingest, answers, UI
+
+
+def _tmpdir():
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="ragtest-")
+
+
+def _stub_llm(reply):
+    """Rewrite calls get keywords; answer calls get `reply`."""
+
+    def f(messages, *a, **kw):
+        return "invoice refunds" if "rewrite" in messages[0]["content"].lower() else reply
+
+    return f
+
+
+def test_config_resolution():
+    import json
+    import ragcli
+
+    d = _tmpdir()
+    cfg = os.path.join(d, "rag.json")
+    with open(cfg, "w") as f:
+        json.dump({"llm_base": "https://cfg.example", "llm_model": "cfg-model"}, f)
+    c = ragcli.load_config(cfg)
+    assert c["llm_base"] == "https://cfg.example" and c["llm_model"] == "cfg-model"
+    ragcli.CFG.clear()
+    ragcli.CFG.update(c)
+    try:
+        assert ragcli.resolve("llm_base", None, None, "http://d") == "https://cfg.example"
+        assert ragcli.resolve("llm_base", "http://flag", None, "http://d") == "http://flag"
+        os.environ["RAG_TEST_BASE"] = "http://env"
+        assert ragcli.resolve("llm_base", None, "RAG_TEST_BASE", "http://d") == "http://env"
+        del os.environ["RAG_TEST_BASE"]
+        assert ragcli.resolve("nope", None, None, "fallback") == "fallback"
+    finally:
+        ragcli.CFG.clear()
+    with open(cfg, "w") as f:
+        f.write("{not json")
+    assert ragcli.load_config(cfg) == {}  # malformed -> empty config, defaults apply, no crash
+
+
+def test_cloud_auth_header():
+    import rag
+
+    assert rag._headers(None) == {"Content-Type": "application/json"}
+    assert rag._headers("sk-abc")["Authorization"] == "Bearer sk-abc"
+
+
+def test_pdf_missing_dep_message():
+    import sys
+    import ragcli
+
+    p = os.path.join(_tmpdir(), "contract.pdf")
+    with open(p, "wb") as f:
+        f.write(b"%PDF-1.4\n")
+    saved = sys.modules.pop("pypdf", None)
+    sys.modules["pypdf"] = None  # block the import: deterministic whether or not pypdf is installed
+    try:
+        try:
+            ragcli.extract(p)
+            assert False, "should have raised"
+        except ragcli.ExtractError as e:
+            assert "uv add pypdf" in str(e), e
+    finally:
+        sys.modules.pop("pypdf", None)
+        if saved is not None:
+            sys.modules["pypdf"] = saved
+
+
+def test_corrupt_pdf_message():
+    # scanned/encrypted PDFs are normal in legal work; they must not kill the batch
+    import sys
+    import ragcli
+
+    if sys.modules.get("pypdf") is None or not __import__("importlib").util.find_spec("pypdf"):
+        return  # extractor not installed; the missing-dep path is covered above
+    p = os.path.join(_tmpdir(), "broken.pdf")
+    with open(p, "wb") as f:
+        f.write(b"%PDF-1.4\nnot really a pdf")
+    try:
+        ragcli.extract(p)
+        assert False, "should have raised"
+    except ragcli.ExtractError as e:
+        assert "could not read" in str(e), e
+
+
+def test_add_incremental():
+    r = _rag()
+    assert r.add("d", "unchanged text") is True
+    assert r.add("d", "unchanged text") is False  # same hash -> skipped
+    assert r.add("d", "changed text") is True
+    assert r.doc("d") == "changed text"
+
+
+def test_walk_skips_noise():
+    import ragcli
+
+    d = _tmpdir()  # lives under a dot-directory (.hermes cache): must still index
+    os.makedirs(os.path.join(d, ".git"))
+    os.makedirs(os.path.join(d, "sub"))
+    for p in ("a.md", ".git/x.md", "sub/b.md", "rag.db", "rag.json"):
+        with open(os.path.join(d, p), "w") as f:
+            f.write("x")
+    got = {ragcli.doc_id(p, d) for p in ragcli.walk([d], d)}
+    assert got == {"a.md", "sub/b.md"}, got
+
+
+def test_answer_no_model():
+    out = _rag().answer("invoice refunds", k=3)
+    assert out["answer"] is None
+    assert out["status"] == "no_model", out
+    assert out["citations"] and out["citations"][0]["id"] == "invoice", out
+    assert "no model" in out["note"].lower()  # it says so rather than pretending
+
+
+def test_answer_not_found():
+    import rag
+
+    r = _rag()
+    r.use_llm = True
+    orig = rag.llm
+    try:
+        rag.llm = _stub_llm("NOT_FOUND_IN_CORPUS")
+        out = r.answer("what is the capital of Peru?", k=3)
+        assert out["status"] == "not_found", out
+        assert out["answer"] is None  # never invents one
+    finally:
+        rag.llm = orig
+
+
+def test_answer_ok():
+    import rag
+
+    r = _rag()
+    r.use_llm = True
+    orig = rag.llm
+    try:
+        rag.llm = _stub_llm("Refunds take 5 days [1].")
+        out = r.answer("how long do refunds take?", k=3)
+        assert out["status"] == "ok", out
+        assert "[1]" in out["answer"]
+        assert out["citations"][0]["id"] == "invoice"
+    finally:
+        rag.llm = orig
+
+
+def test_retrieve_survives_a_mangled_rewrite():
+    # FTS5 has no stemming: the rewrite can turn "refunds" into "refund", which
+    # appears in no document. The raw query must still reach the exact document.
+    import rag
+
+    r = _rag()
+    r.use_llm = True
+    orig = rag.llm
+    try:
+        rag.llm = lambda *a, **kw: "refund processing time"
+        ids = [h["id"] for h in r.retrieve("how long do refunds take?", k=5)]
+        assert "invoice" in ids, ids
+    finally:
+        rag.llm = orig
+
+
+def test_serve_ask():
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    import ragcli
+
+    srv = ragcli.make_server(_rag(), "127.0.0.1", 0)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address[:2]
+        base = f"http://{host}:{port}"
+        with urllib.request.urlopen(base + "/api/ask?q=invoice+refunds&k=3", timeout=5) as resp:
+            out = json.load(resp)
+        assert out["status"] == "no_model", out
+        assert out["citations"][0]["id"] == "invoice"
+        with urllib.request.urlopen(base + "/", timeout=5) as resp:
+            assert b"<html" in resp.read().lower()
+        try:
+            urllib.request.urlopen(base + "/api/ask", timeout=5)  # no q
+            assert False, "missing q should be 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+    finally:
+        srv.shutdown()
+        t.join(timeout=5)
+
+
+def test_cli_add_search_json():
+    import ragcli
+
+    d = _tmpdir()
+    docs = os.path.join(d, "docs")
+    os.makedirs(docs)
+    with open(os.path.join(docs, "pw.md"), "w") as f:
+        f.write("How to reset my password. Click forgot password.")
+    cfg = os.path.join(d, "rag.json")
+    db = os.path.join(d, "t.db")
+    assert ragcli.main(["--config", cfg, "--db", db, "add", docs]) == 0
+    assert ragcli.main(["--config", cfg, "--db", db, "add", docs]) == 0  # unchanged -> skipped
+    assert ragcli.main(["--config", cfg, "--db", db, "--json", "search", "reset password"]) == 0
+
+
+def test_cli_empty_corpus_hint():
+    import ragcli
+
+    d = _tmpdir()
+    assert ragcli.main(["--db", os.path.join(d, "empty.db"), "--config", os.path.join(d, "c.json"), "search", "x"]) == 3
+
+
+def test_cli_doctor_dead_endpoint():
+    import contextlib
+    import io
+
+    import ragcli
+
+    cfg = os.path.join(_tmpdir(), "rag.json")
+    with open(cfg, "w") as f:
+        f.write('{"llm_base": "http://127.0.0.1:1"}')
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = ragcli.main(["--config", cfg, "doctor"])
+    assert code != 0  # reports unreachable, no traceback
+    assert "unreachable" in buf.getvalue().lower()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

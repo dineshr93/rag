@@ -1,0 +1,15 @@
+{
+  "llm_base": "http://127.0.0.1:8888",
+  "llm_model": "",
+  "llm_api_key": "",
+  "llm_reasoning": "none",
+  "embed_base": "",
+  "embed_model": "hash-bow-512",
+  "embed_max_chars": 4000,
+  "db": "rag.db",
+  "corpus": ".",
+  "glossary": "glossary.txt",
+  "answer_mode": "general",
+  "serve_host": "127.0.0.1",
+  "serve_port": 8765
+}

@@ -26,6 +26,24 @@ import numpy as np
 
 EMBED_DIM = 512
 
+CFG = {}  # rag.json contents, loaded by ragcli at startup; env vars still win
+
+
+def _cfg(env, key, default=None):
+    """Resolution order: env var > rag.json > built-in default."""
+    v = os.environ.get(env)
+    if v:
+        return v
+    v = CFG.get(key)
+    return v if v not in (None, "") else default
+
+
+def _headers(key=None):
+    h = {"Content-Type": "application/json"}
+    if key:
+        h["Authorization"] = "Bearer " + key
+    return h
+
 STOP = frozenset(
     "a an and are as at be by do does for from how i in is it my of on or the to what when where which with you your".split()
 )
@@ -37,6 +55,7 @@ SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(id UNINDEXED, text);
 CREATE TABLE IF NOT EXISTS vectors(id TEXT PRIMARY KEY, vec BLOB, model TEXT);
 CREATE TABLE IF NOT EXISTS access(id TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS meta(id TEXT PRIMARY KEY, sha TEXT, mtime REAL, chars INTEGER);
 """
 
 
@@ -60,18 +79,23 @@ def _api_base(url):
 def llm(messages, model=None, max_tokens=1024, timeout=120):
     """OpenAI-compatible chat call, stdlib only. None when unreachable -> callers
     fall back to deterministic rewriting."""
-    base = _api_base(os.environ.get("RAG_LLM_BASE") or os.environ.get("LLAMA_CPP_BASE_URL") or "http://127.0.0.1:8888")
+    base = _api_base(_cfg("RAG_LLM_BASE", "llm_base", os.environ.get("LLAMA_CPP_BASE_URL") or "http://127.0.0.1:8888"))
+    key = _cfg("RAG_API_KEY", "llm_api_key", None)
     url = base + "/chat/completions"
-    for effort, budget in ((None, max_tokens), ("none", max_tokens * 2)):
+    # ponytail: "auto" keeps attempt 1 field-free, so strict OpenAI-compatible
+    # endpoints never see reasoning_effort. "none" is for endpoints running a
+    # reasoning model, where a trivial rewrite otherwise burns ~20s thinking.
+    reasoning = _cfg("RAG_LLM_REASONING", "llm_reasoning", "auto")
+    for effort, budget in ((reasoning if reasoning != "auto" else None, max_tokens), ("none", max_tokens * 2)):
         body = {
-            "model": model or os.environ.get("RAG_LLM_MODEL") or "deepseek-v4.1-flash",
+            "model": model or _cfg("RAG_LLM_MODEL", "llm_model", "deepseek-v4.1-flash"),
             "messages": messages,
             "temperature": 0,
             "max_tokens": budget,
         }
         if effort:
             body["reasoning_effort"] = effort  # sent only on retry: strict endpoints never see it
-        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=_headers(key))
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 out = json.load(r)
@@ -110,7 +134,7 @@ def _hash_vec(text):
 
 
 def _glossary():
-    path = os.environ.get("RAG_GLOSSARY", "glossary.txt")
+    path = _cfg("RAG_GLOSSARY", "glossary", "glossary.txt")
     if os.path.exists(path):
         return open(path, encoding="utf-8").read().strip()
     return ""
@@ -135,6 +159,34 @@ def _decompose_messages(query):
     ]
 
 
+# The honesty requirement: a tool that invents a clause is worse than one that
+# says it does not know. Both modes are instructed to admit absence explicitly.
+ANSWER_PROMPTS = {
+    "general": (
+        "Answer the question using ONLY the numbered sources below.\n"
+        "Quote the relevant text verbatim and cite the source number like [1].\n"
+        "If the sources do not contain the answer, reply exactly NOT_FOUND_IN_CORPUS.\n"
+        "Never use outside knowledge."
+    ),
+    "legal": (
+        "You are a document retrieval assistant for legal and contract review.\n"
+        "Answer the question using ONLY the numbered sources below.\n"
+        "Quote the exact clause text verbatim and cite the source number like [1].\n"
+        "Never paraphrase a clause, never infer, never apply outside law or knowledge.\n"
+        "If the sources do not contain the answer, reply exactly NOT_FOUND_IN_CORPUS."
+    ),
+}
+NOT_FOUND = "NOT_FOUND_IN_CORPUS"
+
+
+def _answer_messages(query, sources, mode):
+    sys = ANSWER_PROMPTS.get(mode, ANSWER_PROMPTS["general"])
+    return [
+        {"role": "system", "content": sys},
+        {"role": "user", "content": f"Sources:\n\n{sources}\n\nQuestion: {query}"},
+    ]
+
+
 def _feedback(results, quality):
     top = " ".join(r["text"][:200] for r in results[:3])
     return f"quality={quality:.2f}; top hits contain: {top}"
@@ -151,10 +203,11 @@ class Rag:
         # it safe for the parallel sub-query fan-out. Per-thread conns if that changes.
         self.db = sqlite3.connect(db, check_same_thread=False)
         self.db.executescript(SCHEMA)
+        self.db_path = db
         self.use_llm = use_llm
         self.hot_threshold = hot_threshold
         self.glossary = glossary if glossary is not None else _glossary()
-        self.embed_model = os.environ.get("RAG_EMBED_MODEL", "hash-bow-512")
+        self.embed_model = _cfg("RAG_EMBED_MODEL", "embed_model", "hash-bow-512")
         self.lock = threading.Lock()
 
     def _q(self, sql, params=()):
@@ -167,10 +220,21 @@ class Rag:
             return rows
 
     # -- store: whole documents, no chunking -------------------------------------
-    def add(self, doc_id, text):
+    def add(self, doc_id, text, mtime=None):
+        """Whole-document store. Returns False when the content hash is unchanged,
+        so re-indexing a folder only pays for the files that actually changed."""
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        row = self._q("SELECT sha FROM meta WHERE id=?", (doc_id,))
+        if row and row[0][0] == sha:
+            return False
         self._q("DELETE FROM docs WHERE id=?", (doc_id,))
         self._q("INSERT INTO docs(id, text) VALUES(?,?)", (doc_id, text))
         self._q("DELETE FROM vectors WHERE id=?", (doc_id,))
+        self._q(
+            "INSERT OR REPLACE INTO meta(id,sha,mtime,chars) VALUES(?,?,?,?)",
+            (doc_id, sha, mtime if mtime is not None else 0.0, len(text)),
+        )
+        return True
 
     def doc(self, doc_id):
         rows = self._q("SELECT text FROM docs WHERE id=?", (doc_id,))
@@ -246,16 +310,65 @@ class Rag:
             have.update(t.lower() for t in _toks(r["text"]))
         return len(want & have) / len(want)
 
+    # -- cited answers -------------------------------------------------------------
+    def retrieve(self, query, k=10):
+        """Raw query AND its rewrite, unioned. The rewrite fixes vocabulary mismatch
+        but FTS5 has no stemming, so it can also mutate a term the corpus spells
+        differently ('refunds' -> 'refund') and miss the exact document. One extra
+        BM25 pass buys the exact-match path back."""
+        raw = self.search(query, k=k)
+        if not self.use_llm:
+            return raw
+        out, seen = [], set()
+        for h in raw + self.search(self.rewrite(query), k=k):
+            if h["id"] not in seen:
+                seen.add(h["id"])
+                out.append(h)
+        return out[:k]
+
+    def answer(self, query, k=6, mode=None):
+        """Retrieval + synthesis with citations. Never invents an answer: with no
+        model it returns the passages and says so, and a NOT_FOUND reply from the
+        model is surfaced as status='not_found', not smoothed over."""
+        mode = mode or CFG.get("answer_mode", "general")
+        hits = self.retrieve(query, k=k)
+        cites = [
+            {
+                "n": i + 1,
+                "id": h["id"],
+                "snip": h.get("snip") or h["text"][:160],
+                "score": h.get("sem", h.get("score", 0.0)),
+            }
+            for i, h in enumerate(hits)
+        ]
+        if not hits:
+            return {"answer": None, "status": "empty", "citations": [],
+                    "note": "no matching passages in the corpus"}
+        if self.use_llm:
+            sources = "\n\n".join(
+                f"[{i + 1}] {h['id']}\n{h['text'][:2000]}" for i, h in enumerate(hits)
+            )
+            out = llm(_answer_messages(query, sources, mode))
+            if out:
+                if NOT_FOUND in out:
+                    return {"answer": None, "status": "not_found", "citations": cites,
+                            "note": "the corpus does not contain an answer"}
+                return {"answer": out, "status": "ok", "citations": cites, "note": None}
+        return {"answer": None, "status": "no_model", "citations": cites,
+                "note": "no model configured — showing matching passages only"}
+
     # -- recipes 3 & 4: hybrid / on-the-fly --------------------------------------
     def embed(self, texts):
-        vecs = self._embed_api(texts) if os.environ.get("RAG_EMBED_BASE") else None
+        base = _cfg("RAG_EMBED_BASE", "embed_base", None)
+        vecs = self._embed_api(texts, base) if base else None
         return vecs if vecs is not None else [_hash_vec(t) for t in texts]
 
-    def _embed_api(self, texts):
-        base = _api_base(os.environ["RAG_EMBED_BASE"])
+    def _embed_api(self, texts, base):
+        base = _api_base(base)
+        key = _cfg("RAG_API_KEY", "llm_api_key", None)
         body = {"model": self.embed_model, "input": _embed_inputs(texts)}
         req = urllib.request.Request(
-            base + "/embeddings", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+            base + "/embeddings", data=json.dumps(body).encode(), headers=_headers(key)
         )
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -423,84 +536,11 @@ def recommend(
 
 # --------------------------------------------------------------------------- CLI
 def main(argv=None):
-    import argparse
+    """Kept so `python3 rag.py ...` still works. The real CLI — config, ingestion,
+    the browser UI — lives in ragcli; one CLI, so the two can't drift apart."""
+    import ragcli
 
-    p = argparse.ArgumentParser(prog="rag", description="rag.md recipes, ladder-first")
-    p.add_argument("--db", default=os.environ.get("RAG_DB", "rag.db"))
-    p.add_argument("--no-llm", action="store_true", help="force deterministic rewriting")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    a = sub.add_parser("index", help="store whole files as documents")
-    a.add_argument("paths", nargs="+")
-    for name in ("search", "ask", "hybrid", "multi"):
-        s = sub.add_parser(name)
-        s.add_argument("query")
-        s.add_argument("-k", type=int, default=5)
-    pre = sub.add_parser("pre", help="pre-embed (recipe 6); with a query, search the stored vectors")
-    pre.add_argument("query", nargs="?")
-    pre.add_argument("-k", type=int, default=5)
-    hot = sub.add_parser("hot", help="search with hot/cold tiers (recipe 5)")
-    hot.add_argument("query")
-    hot.add_argument("-k", type=int, default=5)
-    r = sub.add_parser("recommend", help="run the decision tree")
-    r.add_argument("--qpd", type=int, default=0)
-    r.add_argument("--churn", type=float, default=0.0, help="%% of docs changed per day")
-    r.add_argument("--corpus", type=int, default=0)
-    r.add_argument("--complaint", default="")
-    r.add_argument("--ml", action="store_true")
-    r.add_argument("--hot-patterns", action="store_true")
-    r.add_argument("--no-search", action="store_true")
-    r.add_argument("--latency-ok", action=argparse.BooleanOptionalAction, default=True)
-    args = p.parse_args(argv)
-
-    if args.cmd == "recommend":
-        rec = recommend(
-            has_search=not args.no_search,
-            complaint=args.complaint,
-            qpd=args.qpd,
-            churn_pct_day=args.churn,
-            corpus=args.corpus,
-            ml_team=args.ml,
-            hot_patterns=args.hot_patterns,
-            latency_ok=args.latency_ok,
-        )
-        print(f"recipe {rec['recipe']}: {rec['why']}")
-        return 0
-
-    rag = Rag(db=args.db, use_llm=not args.no_llm)
-
-    if args.cmd == "index":
-        n = 0
-        for path in args.paths:
-            rag.add(path, open(path, encoding="utf-8").read())
-            n += 1
-        print(f"indexed {n} documents (whole, unchunked) -> {args.db}")
-        return 0
-
-    q = args.query
-    hits = []
-    if args.cmd == "search":
-        hits = rag.search(q, k=args.k)
-    elif args.cmd == "ask":
-        hits = rag.search(rag.rewrite(q), k=args.k)
-    elif args.cmd == "hybrid":
-        hits = rag.hybrid(q, k=args.k)
-    elif args.cmd == "multi":
-        hits = rag.search_multi_intent(q, k=args.k)
-    elif args.cmd == "hot":
-        rag.refresh_hot()
-        hits = rag.search_hot_cold(q, k=args.k)
-    elif args.cmd == "pre":
-        if args.query:
-            hits = rag.search_preembedded(q, k=args.k)
-        else:
-            print(f"pre-embedded {rag.preembed()} documents")
-            return 0
-    for h in hits:
-        extra = f" [{h['sub_query']}]" if "sub_query" in h else ""
-        score = h.get("sem", h.get("score", 0.0))
-        print(f"{score:+.4f}  {h['id']}{extra}  {(h.get('snip') or h['text'][:70]).replace(chr(10), ' ')}")
-    return 0
+    return ragcli.main(argv)
 
 
 if __name__ == "__main__":
