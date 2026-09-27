@@ -256,6 +256,57 @@ def test_answer_ok():
         rag.llm = orig
 
 
+def test_answer_sends_the_matching_window_not_the_head():
+    """A whole document is longer than a model can take, and the first screenful of a
+    contract is its cover page. The answer must be built from the region that matches
+    the question, and the cut must be visible rather than silent."""
+    import rag
+
+    r = _rag()
+    filler = "VERMIETERVEREIN BOILERPLATE PARA. "
+    r.add("lease", filler * 300 + "Die Miete betraegt 900 EUR netto pro Monat. " + filler * 300)
+    assert r.doc("lease").index("900 EUR") > 2000  # deep in the doc, past any head cut
+    r.use_llm = True
+    seen = {}
+
+    def spy(messages, *a, **kw):
+        seen["sources"] = messages[1]["content"]
+        return "Die Miete betraegt 900 EUR netto pro Monat [1]."
+
+    orig = rag.llm
+    try:
+        rag.llm = spy
+        out = r.answer("wie hoch ist die Miete 900 EUR", k=1)
+    finally:
+        rag.llm = orig
+    assert out["status"] == "ok", out
+    assert "900 EUR" in seen["sources"], seen["sources"][:400]
+    assert len(seen["sources"]) < 2400  # a window, not the whole ~21k-char document
+    c = out["citations"][0]
+    assert c["chars"] == len(r.doc("lease"))
+    assert c["sent"] <= rag._answer_budget() < c["chars"], c
+    assert [t["id"] for t in out["truncated"]] == ["lease"], out["truncated"]
+
+
+def test_answer_short_doc_is_not_truncated():
+    """A document that fits is sent whole: nothing is reported as cut, and the
+    not_found note can then honestly say the corpus holds no answer."""
+    import rag
+
+    r = _rag()
+    r.use_llm = True
+    orig = rag.llm
+    try:
+        rag.llm = _stub_llm("NOT_FOUND_IN_CORPUS")
+        out = r.answer("invoice refund policy", k=1)
+    finally:
+        rag.llm = orig
+    assert out["status"] == "not_found", out
+    assert out["truncated"] == [], out["truncated"]
+    assert out["citations"][0]["sent"] == out["citations"][0]["chars"]
+    assert out["note"] == "the corpus does not contain an answer", out["note"]
+
+
 def test_retrieve_survives_a_mangled_rewrite():
     # FTS5 has no stemming: the rewrite can turn "refunds" into "refund", which
     # appears in no document. The raw query must still reach the exact document.

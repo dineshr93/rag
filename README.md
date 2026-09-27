@@ -140,12 +140,14 @@ recipe 1 + 2 are enough — that's the target for ~60% of systems.
 | `corpus` | `.` | root folder document ids are relative to |
 | `glossary` | `glossary.txt` | domain terms never rewritten |
 | `answer_mode` | `general` | `general` or `legal` (stricter, quotes clauses) |
+| `answer_max_chars` | `2000` | how much of each retrieved document the answer is built from — the regions matching the question, not the head; costs `k ×` this in the prompt |
 | `serve_host` / `serve_port` | `127.0.0.1` / `8765` | browser UI bind |
 
 Resolution order everywhere: **CLI flag > env var > `rag.json` > default.**
 Env vars: `RAG_CONFIG`, `RAG_LLM_BASE`, `RAG_LLM_MODEL`, `RAG_API_KEY`,
 `RAG_LLM_REASONING`, `RAG_EMBED_BASE`, `RAG_EMBED_MODEL`, `RAG_EMBED_MAX_CHARS`,
-`RAG_DB`, `RAG_CORPUS`, `RAG_GLOSSARY`, `RAG_SERVE_HOST`, `RAG_SERVE_PORT`.
+`RAG_ANSWER_MAX_CHARS`, `RAG_DB`, `RAG_CORPUS`, `RAG_GLOSSARY`, `RAG_SERVE_HOST`,
+`RAG_SERVE_PORT`.
 `--no-llm` forces deterministic rewriting — useful when there's no model around.
 
 ## Browser UI
@@ -163,7 +165,7 @@ Two modules split at the engine/app seam:
 - `rag.py` — engine: BM25 retrieval, LLM/embed clients, whole-document storage,
   answer synthesis, `recommend()`.
 - `ragcli.py` — app layer: config, ingestion, CLI, browser UI.
-- `test_rag.py` — 26 runnable checks, no pytest, no network. `uv run test_rag.py`.
+- `test_rag.py` — 28 runnable checks, no pytest, no network. `uv run test_rag.py`.
 
 One SQLite file. Documents are stored **whole** — no chunking, no chunk-size or
 overlap decisions, no eval harness for chunks (recipe 1's whole point). A `meta`
@@ -206,6 +208,12 @@ The decision tree from the article is `recommend()`; the CLI runs it.
 - `agentic_search`'s quality signal is lexical coverage, not an LLM judge.
 - ANN is a linear scan; hot tier is recomputed on read, not on a cron.
 - `decompose`'s fallback splits on "and"/commas and invents no dependencies.
+- `answer()` sends the regions of a long document that match the question, up to
+  `answer_max_chars` per document — never its first screenful, which for a 60-page
+  PDF is its cover page. Each citation reports `sent`/`chars` and truncated documents
+  are listed under `truncated`. Windows are chosen lexically: a query whose words the
+  corpus never uses still finds nothing, which is recipe 1's advice (`search` the
+  exact term) and recipe 2's job (rewriting), not windowing's.
 - `answer()` cites the whole document it retrieved, not a page number — page
   offsets aren't tracked, because documents are stored whole.
 - A reasoning model spends its budget on `reasoning_content` before emitting the

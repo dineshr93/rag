@@ -35,8 +35,8 @@ rag.CFG = CFG  # engine and app layer share one dict, so they never disagree
 
 CONFIG_KEYS = (
     "llm_base", "llm_model", "llm_api_key", "llm_reasoning", "embed_base",
-    "embed_model", "embed_max_chars", "db", "corpus", "glossary", "answer_mode",
-    "serve_host", "serve_port",
+    "embed_model", "embed_max_chars", "answer_max_chars", "db", "corpus",
+    "glossary", "answer_mode", "serve_host", "serve_port",
 )
 
 # ponytail: four presets cover the realistic setups; a fifth just adds a menu
@@ -319,7 +319,11 @@ async function ask(){
   const q = document.getElementById('q').value;
   const r = await fetch('/api/ask?q=' + encodeURIComponent(q));
   const d = await r.json();
-  document.getElementById('a').textContent = d.answer || d.note || '';
+  // A long document is sent as its matching regions; show what was left out so a
+  // missing answer is not mistaken for "the whole corpus was read".
+  const tr = (d.truncated||[]).map(t => `${t.id} (${t.sent} of ${t.chars} chars)`).join(', ');
+  document.getElementById('a').textContent = (d.answer || d.note || '') +
+    (tr ? ' — not sent to the model: ' + tr : '');
   document.getElementById('c').innerHTML = (d.citations||[]).map(
     x => `<li><b>${esc(x.id)}</b> — ${esc(x.snip)}</li>`).join('');
 }
@@ -420,6 +424,12 @@ def doctor(flag_path=None, db_flag=None):
     print(f"llm_model:  {resolve('llm_model', None, 'RAG_LLM_MODEL', '(endpoint default)')}")
     print(f"api key:    {'set (' + key[:4] + '…)' if key else '(none)'}")
     print(f"reasoning:  {resolve('llm_reasoning', None, 'RAG_LLM_REASONING', 'auto')}")
+    # The embedding settings decide whether recipes 3-6 are semantic or the hashed
+    # stand-in, and the answer cap decides how much of a long document is read —
+    # without these lines a silent fallback is invisible to the one tool that checks.
+    print(f"embed_base: {resolve('embed_base', None, 'RAG_EMBED_BASE', '(hashed fallback)')}")
+    print(f"embed_model:{resolve('embed_model', None, 'RAG_EMBED_MODEL', 'hash-bow-512')}")
+    print(f"answer cap: {resolve('answer_max_chars', None, 'RAG_ANSWER_MAX_CHARS', 2000)} chars per document")
     print(f"db:         {db}")
     try:
         with urllib.request.urlopen(_api_base(base) + "/models", timeout=5) as r:
@@ -495,6 +505,15 @@ def _print_answer(out):
         print(f"({out['note']})")
     for c in out["citations"]:
         print(f"  [{c['n']}] {c['id']}  {c['snip']}")
+    # A long document is sent as its matching regions, not whole. Say which documents
+    # were cut, so "the corpus has no answer" is never mistaken for "we read
+    # everything" — the same honesty rule as NOT_FOUND_IN_CORPUS.
+    truncated = out.get("truncated") or ()
+    for t in truncated:
+        print(f"  … [{t['n']}] {t['id']}: sent {t['sent']} of {t['chars']} chars")
+    if truncated:
+        print("  the rest was not sent to the model — raise answer_max_chars, or "
+             "search the exact term (it shows the clause itself)")
 
 
 def _main(argv=None):

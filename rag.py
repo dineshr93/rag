@@ -224,6 +224,102 @@ def _rec(recipe, why):
     return {"recipe": recipe, "why": why}
 
 
+# ---------------------------------------------------------------- answer windows
+# Documents are stored whole, so a retrieved document is usually far longer than
+# what a model can take. Cutting off the head sends the cover page of a 60-page PDF
+# and then reports NOT_FOUND_IN_CORPUS about an answer the corpus does contain —
+# measured: a 62,698-char contract, rent clause at char 6,451, first 2,000 sent.
+WIN_CTX = 150  # chars of context kept around each matched term
+
+
+def _answer_budget():
+    """How much of each retrieved document a cited answer is built from. This is a
+    budget, not a head-cut: what gets sent is the regions that match the question
+    (see _spans). The prompt costs k documents x this, so raise it with your model's
+    context window in mind."""
+    return int(_cfg("RAG_ANSWER_MAX_CHARS", "answer_max_chars", 2000) or 2000)
+
+
+def _word(term):
+    """Match a whole word, Unicode-aware. ASCII-only _toks splits German words
+    (Kühler -> h, ler), and the windowing has to follow the corpus's own spelling.
+    Whole-word so 'rent' never matches inside 'Miete' or 'Vermieterverein'."""
+    return re.compile(r"(?<!\w)" + re.escape(term) + r"(?!\w)", re.IGNORECASE)
+
+
+def _spans(text, query, cap, ctx=WIN_CTX):
+    """The part of a document to send to a model, as one string.
+
+    Rank windows of +/-ctx chars around each query term by how distinctive they are
+    -- a term appearing once in the document is worth more than one appearing 200
+    times, which is what keeps 'die'/'ist' boilerplate from pushing out the clause
+    you asked about -- take the best up to cap, and return them in reading order.
+    A document that fits is returned whole. With no lexical match (a vector-only
+    hit, or a query of pure stopwords) the head is all there is, and the caller
+    reports the difference as truncation rather than hiding it.
+    """
+    if len(text) <= cap:
+        return text
+    terms = {t.lower() for t in re.findall(r"\w+", query) if len(t) > 2} - STOP
+    if not terms:
+        return text[:cap]
+    freq = {t: max(1, len(_word(t).findall(text))) for t in terms}
+    wins = []
+    for t in sorted(terms):
+        for m in _word(t).finditer(text):
+            wins.append((max(0, m.start() - ctx), min(len(text), m.end() + ctx)))
+    if not wins:
+        return text[:cap]
+    merged = []
+    for s, e in sorted(wins):
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    ranked = []
+    for s, e in merged:
+        piece = text[s:e]
+        # inverse document frequency inside the document itself: distinctive terms
+        # choose the window, connectives don't. No corpus stats needed.
+        weight = sum(1.0 / freq[t] for t in terms if _word(t).search(piece))
+        ranked.append((-weight, s, e, piece))
+    ranked.sort()
+    chosen, used = [], 0
+    for _, s, _, piece in ranked:
+        if used + len(piece) > cap:
+            continue  # no half-windows: a fragment of a clause is not evidence
+        chosen.append((s, piece))
+        used += len(piece)
+    if not chosen:
+        return text[:cap]
+    return "\n…\n".join(p for _, p in sorted(chosen))
+
+
+def _answer_sources(query, hits, cap):
+    """Number the documents for the model, each represented by its matching regions.
+    Returns (sources, chars_sent_per_hit). FTS's own snippet words join the query for
+    windowing: they are the terms the search actually matched, usually closer to the
+    corpus's vocabulary than the user's wording."""
+    parts, sent = [], []
+    for i, h in enumerate(hits):
+        window = _spans(h["text"], f"{query} {h.get('snip', '')}", cap)
+        sent.append(len(window))
+        parts.append(f"[{i + 1}] {h['id']}\n{window}")
+    return "\n\n".join(parts), sent
+
+
+def _not_found_note(truncated):
+    """Say what was actually looked at. 'the corpus has no answer' is false when only
+    part of a document was sent; the two must be tellable apart."""
+    if not truncated:
+        return "the corpus does not contain an answer"
+    return (
+        f"the parts sent do not contain the answer, and {len(truncated)} document(s) "
+        "were truncated — the answer may be in the part that was not sent "
+        "(see 'truncated'; raise answer_max_chars or search the term directly)"
+    )
+
+
 # --------------------------------------------------------------------------- engine
 class Rag:
     def __init__(self, db=":memory:", glossary=None, use_llm=True, hot_threshold=3):
@@ -357,7 +453,12 @@ class Rag:
     def answer(self, query, k=6, mode=None):
         """Retrieval + synthesis with citations. Never invents an answer: with no
         model it returns the passages and says so, and a NOT_FOUND reply from the
-        model is surfaced as status='not_found', not smoothed over."""
+        model is surfaced as status='not_found', not smoothed over.
+
+        Each document is sent as its matching regions, not its first screenful (see
+        _spans). Every citation says how much of itself was sent, and a truncated
+        document is listed under 'truncated' — so an answer that misses something
+        deep in a file is a visible tradeoff instead of a mystery."""
         mode = mode or CFG.get("answer_mode", "general")
         hits = self.retrieve(query, k=k)
         cites = [
@@ -366,24 +467,32 @@ class Rag:
                 "id": h["id"],
                 "snip": h.get("snip") or h["text"][:160],
                 "score": h.get("sem", h.get("score", 0.0)),
+                "chars": len(h["text"]),
+                "sent": 0,  # filled below, once the window is chosen
             }
             for i, h in enumerate(hits)
         ]
         if not hits:
             return {"answer": None, "status": "empty", "citations": [],
                     "note": "no matching passages in the corpus"}
+        sources, sent = _answer_sources(query, hits, _answer_budget())
+        for c, n in zip(cites, sent):
+            c["sent"] = n
+        truncated = [
+            {"n": c["n"], "id": c["id"], "chars": c["chars"], "sent": c["sent"]}
+            for c in cites if c["sent"] < c["chars"]
+        ]
         if self.use_llm:
-            sources = "\n\n".join(
-                f"[{i + 1}] {h['id']}\n{h['text'][:2000]}" for i, h in enumerate(hits)
-            )
             out = llm(_answer_messages(query, sources, mode))
             if out:
                 if NOT_FOUND in out:
                     return {"answer": None, "status": "not_found", "citations": cites,
-                            "note": "the corpus does not contain an answer"}
-                return {"answer": out, "status": "ok", "citations": cites, "note": None}
+                            "note": _not_found_note(truncated), "truncated": truncated}
+                return {"answer": out, "status": "ok", "citations": cites, "note": None,
+                        "truncated": truncated}
         return {"answer": None, "status": "no_model", "citations": cites,
-                "note": "no model configured — showing matching passages only"}
+                "note": "no model configured — showing matching passages only",
+                "truncated": truncated}
 
     # -- recipes 3 & 4: hybrid / on-the-fly --------------------------------------
     def embed(self, texts):
