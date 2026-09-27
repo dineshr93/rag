@@ -1,17 +1,24 @@
-# rag — the rag.md recipe book, ladder-first
+# rag-ladder — the 6 RAG recipe book, ladder-first
 
-rag.md's thesis: most stacks jump to embeddings + vector DB + rerankers while
+The article's thesis: most stacks jump to embeddings + vector DB + rerankers while
 users just want the doc that says "how to reset my password". So this code
 climbs the ladder and stops where the problem is already solved.
 
+**Inspiration.** This code implements the recipe book from Rafael Pierre's
+article ["RAG Is Simpler Than You Think"](https://www.lighthousenewsletter.com/p/rag-is-simpler-than-you-think)
+(Lighthouse Newsletter, Jun 10, 2026). The six recipes — BM25, agentic query
+rewriting, hybrid, on-the-fly, hot/cold, and full pre-embedding — and the
+decision tree that picks between them come directly from that article. The
+guiding principle: *don't build the 5% solution for a 60% problem.*
+
 **Start here. Four commands do the whole job:**
 
-    rag init          # choose your model backend — writes rag.json
-    rag add <folder>  # index PDFs, DOCX, markdown, text, images (vision), video
-    rag serve         # open the browser UI, ask questions, get cited answers
-    rag doctor        # when something doesn't work
+    rag-ladder init          # choose your model backend — writes rag.json
+    rag-ladder add <folder>  # index PDFs, DOCX, markdown, text, images (vision), video
+    rag-ladder serve         # open the browser UI, ask questions, get cited answers
+    rag-ladder doctor        # when something doesn't work
 
-`rag ask "..."` answers from your documents with citations, and says
+`rag-ladder ask "..."` answers from your documents with citations, and says
 `NOT_FOUND_IN_CORPUS` when your documents don't contain the answer. It never
 invents one — that is the whole point for legal and contract work.
 
@@ -19,17 +26,17 @@ invents one — that is the whole point for legal and contract work.
 
     uv sync                    # core: numpy only, stdlib search
     uv sync --extra docs       # adds pypdf + python-docx, for PDF/DOCX folders
-    uv tool install -e .       # then `rag` is a standalone command
+    uv tool install -e .       # then `rag-ladder` is a standalone command
 
 No new pip dependency for images: each photo is read through your LLM's vision
 capability. Video needs the `ffmpeg` system binary (no pip) — see "Image and video".
 
-Without `--extra docs`, `rag add` still works for `.txt .md .csv .json .html`
+Without `--extra docs`, `rag-ladder add` still works for `.txt .md .csv .json .html`
 and tells you the exact install command when it meets a PDF.
 
 ## Image and video
 
-Photos in a listing folder are usually the actual content. `rag add` sends each
+Photos in a listing folder are usually the actual content. `rag-ladder add` sends each
 image through `llm()` as an OpenAI `image_url` content block and stores the
 transcription plus a scene description for search — the citation is the file path,
 so an answer quoting a photo traces back to it. No extra pip dependency; your
@@ -40,17 +47,17 @@ so an answer quoting a photo traces back to it. No extra pip dependency; your
   message and never filled with guessed text.
 - **Video** (`.mp4 .mov .avi .mkv .webm .flv .m4v`) — needs `ffmpeg`. Up to
   `MAX_VIDEO_FRAMES` (12) evenly spaced frames are extracted, each described via
-  vision and joined. This is the most expensive part of `rag add`: one vision
+  vision and joined. This is the most expensive part of `rag-ladder add`: one vision
   call per frame.
 - **Size** — a 20 MB per-image cap (`MAX_IMAGE_BYTES`); resize oversized files
   before indexing.
 
-`rag doctor` reports whether `ffmpeg` is present and which `llm_model` is resolved
+`rag-ladder doctor` reports whether `ffmpeg` is present and which `llm_model` is resolved
 — confirm that model has vision before adding photo folders.
 
 ## Which model to use
 
-`rag init` offers four backends:
+`rag-ladder init` offers four backends:
 
 | preset | endpoint | model |
 |---|---|---|
@@ -60,45 +67,45 @@ so an answer quoting a photo traces back to it. No extra pip dependency; your
 | `openai` | `https://api.openai.com` | `gpt-4o-mini` |
 
 Anything OpenAI-compatible works: set `llm_base` and `llm_model` in `rag.json`.
-Cloud providers need a key — `rag init --preset openrouter --key sk-or-...`
+Cloud providers need a key — `rag-ladder init --preset openrouter --key sk-or-...`
 writes it into `rag.json` with mode `0600`, or export `RAG_API_KEY`.
 
-`rag doctor` tells you what your endpoint actually serves. If it reports a
+`rag-ladder doctor` tells you what your endpoint actually serves. If it reports a
 reasoning model, recipe 2 (query rewriting) costs far more than the article's
 $0.001/query — point `llm_model` at a small non-reasoning model for the real
-price. `rag ask` works with no model at all: it returns matching passages and
+price. `rag-ladder ask` works with no model at all: it returns matching passages and
 says so instead of guessing.
 
 ## CLI reference
 
-    rag add docs/ contracts.pdf       # index files or folders (recursive)
-    rag add docs/                     # re-run: unchanged files are skipped
-    rag ask "how long do refunds take?"
-    rag ask --mode legal "what is the notice period?"   # quotes clauses, never infers
-    rag search "invoice #12345"       # recipe 1, raw BM25 hits
-    rag hybrid "alternatives to X"    # recipe 3/4
-    rag multi "read csv, clean, plot"
-    rag hot "invoice paid"            # recipe 5
-    rag pre                           # recipe 6: build vectors
-    rag pre "reset password"          # recipe 6: query them
-    rag stats                         # corpus and index sizes
-    rag glossary                      # write the glossary template
-    rag recommend --qpd 500 --churn 2 --complaint "can't find docs"
+    rag-ladder add docs/ contracts.pdf       # index files or folders (recursive)
+    rag-ladder add docs/                     # re-run: unchanged files are skipped
+    rag-ladder ask "how long do refunds take?"
+    rag-ladder ask --mode legal "what is the notice period?"   # quotes clauses, never infers
+    rag-ladder search "invoice #12345"       # recipe 1, raw BM25 hits
+    rag-ladder hybrid "alternatives to X"    # recipe 3/4
+    rag-ladder multi "read csv, clean, plot"
+    rag-ladder hot "invoice paid"            # recipe 5
+    rag-ladder pre                           # recipe 6: build vectors
+    rag-ladder pre "reset password"          # recipe 6: query them
+    rag-ladder stats                         # corpus and index sizes
+    rag-ladder glossary                      # write the glossary template
+    rag-ladder recommend --qpd 500 --churn 2 --complaint "can't find docs"
 
 Add `--json` to `search ask hybrid multi hot pre stats` for scripting.
 Exit codes: `0` ok, `1` runtime failure, `2` bad input or missing extractor,
-`3` empty corpus (the message tells you to run `rag add`).
+`3` empty corpus (the message tells you to run `rag-ladder add`).
 
 ## Decision tree
 
-`rag recommend` picks the next recipe for you. It needs two numbers and a
+`rag-ladder recommend` picks the next recipe for you. It needs two numbers and a
 complaint:
 
-    rag recommend --qpd 500 --churn 2 --complaint "can't find docs"
+    rag-ladder recommend --qpd 500 --churn 2 --complaint "can't find docs"
 
 | Flag | Meaning | How to estimate |
 |---|---|---|
-| `--qpd` | **Queries per day** — how many searches your users make | Count `rag ask`/`rag search` calls in a day, or estimate from traffic |
+| `--qpd` | **Queries per day** — how many searches your users make | Count `rag-ladder ask`/`rag-ladder search` calls in a day, or estimate from traffic |
 | `--churn` | **Corpus churn %/day** — how many documents change daily | Adding 50 docs to a 500-doc corpus = `--churn 10` |
 | `--complaint` | What's wrong with the BM25 results | "can't find", "not great", "okay" |
 
@@ -113,12 +120,12 @@ The tree's answer tells you the next rung to build:
 | "not great" | >100K docs, >10K qpd, ML team | **6** — full pre-embedding |
 | (satisfied) | users happy | **stop** — ship features |
 
-Run it after `rag add`, before you write any code. It returns `None` when
+Run it after `rag-ladder add`, before you write any code. It returns `None` when
 recipe 1 + 2 are enough — that's the target for ~60% of systems.
 
 ## Config
 
-`rag init` writes `rag.json` (see `rag.example.json`). Every key is optional.
+`rag-ladder init` writes `rag.json` (see `rag.example.json`). Every key is optional.
 
 | key | default | what it does |
 |---|---|---|
@@ -143,7 +150,7 @@ Env vars: `RAG_CONFIG`, `RAG_LLM_BASE`, `RAG_LLM_MODEL`, `RAG_API_KEY`,
 
 ## Browser UI
 
-`rag serve` binds `127.0.0.1:8765` and serves a read-only page: ask box, answer
+`rag-ladder serve` binds `127.0.0.1:8765` and serves a read-only page: ask box, answer
 pane, citations, corpus count. Routes: `GET /`, `GET /api/ask?q=&k=`,
 `GET /api/search?q=&k=`, `GET /api/stats`. No write endpoint, so there's no CSRF
 surface. Binding a non-local `--host` prints a warning — that exposes the corpus
@@ -204,7 +211,7 @@ The decision tree from the article is `recommend()`; the CLI runs it.
 - A reasoning model spends its budget on `reasoning_content` before emitting the
   rewrite, so recipe 2 costs far more than the article's $0.001/query. `llm()`
   retries such truncations with `reasoning_effort="none"` (llama.cpp-style
-  servers); `rag doctor` warns, and presets supply a cheap model.
+  servers); `rag-ladder doctor` warns, and presets supply a cheap model.
 
 Bottom line from the article, encoded as the default: don't build the 5%
 solution for a 60% problem. 60% of systems stop at recipe 1 + recipe 2.

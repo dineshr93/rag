@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rag.py — the recipe book from rag.md, implemented ladder-first.
+"""rag.py — the recipe book from recipes.md, implemented ladder-first.
 
 Recipes: 1 BM25 full-text · 2 LLM query rewriting · 3 hybrid (BM25 candidates ->
 embedding rerank) · 4 on-the-fly embedding · 5 hot/cold tiers · 6 full
@@ -507,7 +507,7 @@ def recommend(
     hot_patterns=False,
     latency_ok=True,
 ):
-    """rag.md's decision tree, encoded. Returns the recipe to build (None = stop)."""
+    """recipes.md's decision tree, encoded. Returns the recipe to build (None = stop)."""
     if not has_search:
         return _rec(1, "no search at all — build BM25 first, stop reading and build it")
     if satisfied:

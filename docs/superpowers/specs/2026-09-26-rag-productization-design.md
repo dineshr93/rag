@@ -1,8 +1,8 @@
-# rag productization — design
+# rag-ladder productization — design
 
 ## Problem
 
-`rag.py` implements rag.md's recipes as a single-file CLI. It works (10 checks pass)
+`rag.py` implements recipes.md's recipes as a single-file CLI. It works (10 checks pass)
 but is not operable by a non-technical user:
 
 1. Config is 8 undocumented env vars. No file, no validation, no discovery.
@@ -10,7 +10,7 @@ but is not operable by a non-technical user:
 2. `llm()` and `_embed_api()` send no `Authorization` header, so OpenAI /
    OpenRouter / Anthropic-compatible cloud endpoints are unusable. Only
    anonymous localhost endpoints work.
-3. Ingestion is plain text only (`rag index docs/*.md`). No PDF, no DOCX, no
+3. Ingestion is plain text only (`rag-ladder index docs/*.md`). No PDF, no DOCX, no
    directories. Legal work is PDF-heavy, so the stated target field is dead on
    arrival.
 4. Output is `score  id  snippet`. No answer, no citation, no page/section, no
@@ -25,7 +25,7 @@ but is not operable by a non-technical user:
   `content`, `finish_reason=length`, with the whole budget spent on
   `reasoning_content`. `rag.py` already carries a retry
   (`reasoning_effort="none"`) to survive this.
-- `rag.db` contains one document, `rag.md`. It is a working demo, not a product.
+- `rag.db` contains one document, `recipes.md`. It is a working demo, not a product.
 
 ## Goal
 
@@ -85,8 +85,8 @@ file is where 3am debugging starts.
 
 - Missing file → `{}`, defaults apply. Malformed → one friendly line naming the
   path and the JSON error. Never a traceback.
-- `rag init` writes the file. Interactive menu of presets; also scriptable:
-  `rag init --preset openai --model gpt-4o-mini --key sk-...`.
+- `rag-ladder init` writes the file. Interactive menu of presets; also scriptable:
+  `rag-ladder init --preset openai --model gpt-4o-mini --key sk-...`.
 - Presets:
 
   | preset | base | default model |
@@ -96,7 +96,7 @@ file is where 3am debugging starts.
   | openrouter | `https://openrouter.ai/api` | `openai/gpt-4o-mini` |
   | openai | `https://api.openai.com` | `gpt-4o-mini` |
 
-- `rag doctor` prints the resolved settings with the key masked, pings
+- `rag-ladder doctor` prints the resolved settings with the key masked, pings
   `<base>/models`, lists what the endpoint serves, and warns when the endpoint
   is a reasoning model or unreachable. It also reports corpus size, optional
   extractor availability, and the glossary file.
@@ -111,12 +111,12 @@ configured. Module-level `CFG` dict is populated by `ragcli` at startup;
 `_cfg(env, key, default)` resolves env > CFG > default.
 
 Default model is left unchanged so the working local setup keeps working. The
-reasoning-model trap is *detected and reported* by `rag doctor` rather than
+reasoning-model trap is *detected and reported* by `rag-ladder doctor` rather than
 silently patched; presets supply a cheap non-reasoning default.
 
 ## 3. Ingestion
 
-- `rag add <file|dir>...` walks directories recursively.
+- `rag-ladder add <file|dir>...` walks directories recursively.
 - Text formats read directly: `.txt .md .markdown .rst .csv .tsv .json .html
   .htm .log`.
 - `.pdf` via optional `pypdf`; `.docx` via optional `python-docx`. Missing
@@ -151,7 +151,7 @@ one that says it does not know.
 
 ## 5. Web UI
 
-`rag serve` — stdlib `http.server` `ThreadingHTTPServer`, one inline HTML page,
+`rag-ladder serve` — stdlib `http.server` `ThreadingHTTPServer`, one inline HTML page,
 no framework, no build step.
 
 - `GET /` → page: query box, Ask button, answer pane, citations, corpus count.
@@ -168,10 +168,10 @@ no framework, no build step.
 - `main()` catches `ExtractError`, `OSError`, `sqlite3.Error`,
   `urllib.error.URLError`, `ValueError` → one friendly line on stderr plus an
   exit code. No broad `except Exception` swallowing real bugs.
-- Empty corpus → `exit 3` with `corpus is empty — run: rag add <path>`.
+- Empty corpus → `exit 3` with `corpus is empty — run: rag-ladder add <path>`.
 - `--json` on `search`, `ask`, `hybrid`, `multi`, `hot`, `pre`, `stats`.
-- `rag stats` — docs, chars, vectors, hot tier, db path, config path.
-- `rag glossary` writes `glossary.example.txt` / the configured glossary path.
+- `rag-ladder stats` — docs, chars, vectors, hot tier, db path, config path.
+- `rag-ladder glossary` writes `glossary.example.txt` / the configured glossary path.
 - Shipped templates: `rag.example.json`, `glossary.example.txt`.
 
 ## Non-goals (YAGNI)

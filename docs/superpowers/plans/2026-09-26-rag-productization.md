@@ -1,4 +1,4 @@
-# rag productization — implementation plan
+# rag-ladder productization — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for
@@ -482,7 +482,7 @@ git commit -m "feat: cited answers with NOT_FOUND honesty, general and legal pro
 
 ---
 
-### Task 4: Browser UI (`rag serve`)
+### Task 4: Browser UI (`rag-ladder serve`)
 
 **Files:**
 - Modify: `ragcli.py` (`PAGE`, `serve`)
@@ -594,7 +594,7 @@ def make_server(rag, host="127.0.0.1", port=8765):
 def serve(rag, host="127.0.0.1", port=8765):
     if host not in ("127.0.0.1", "localhost", "::1"):
         print(f"warning: binding {host} exposes the corpus to your network", file=sys.stderr)
-    print(f"rag UI on http://{host}:{port}  (Ctrl-C to stop)")
+    print(f"rag-ladder UI on http://{host}:{port}  (Ctrl-C to stop)")
     make_server(rag, host, port).serve_forever()
 ```
 
@@ -728,7 +728,7 @@ def init(preset, model, key):
     print(f"wrote {path} (preset: {preset})")
     if key:
         os.chmod(path, 0o600)
-    print(f"next: rag add <folder>  then  rag ask \"...\"")
+    print(f"next: rag-ladder add <folder>  then  rag-ladder ask \"...\"")
     return 0
 ```
 
@@ -774,7 +774,7 @@ then subcommands `init` (`--preset --model --key`), `doctor`, `add <paths>`,
 
 `search`/`ask`/`hybrid`/`multi`/`hot`/`pre` print either the `--json` blob or the
 human line already in `rag.py`; every query path checks `len(rag.doc_ids()) == 0`
-first and returns `3` with `corpus is empty — run: rag add <path>`.
+first and returns `3` with `corpus is empty — run: rag-ladder add <path>`.
 
 `--json` output for `ask` is the whole `answer()` dict, so scripts get citations
 and `status` without parsing prose.
@@ -807,7 +807,7 @@ git commit -m "feat: CLI init/doctor/stats/glossary, --json, friendly errors, em
 py-modules = ["rag", "ragcli"]
 
 [project.scripts]
-rag = "ragcli:main"
+rag-ladder = "ragcli:main"
 
 [project.optional-dependencies]
 docs = ["pypdf>=4", "python-docx>=1"]
@@ -815,7 +815,7 @@ docs = ["pypdf>=4", "python-docx>=1"]
 
 - [ ] **Step 2: Verify the install still resolves and the entry point works**
 
-Run: `uv sync && uv run rag --help`
+Run: `uv sync && uv run rag-ladder --help`
 Expected: help text listing every subcommand, exit 0.
 
 - [ ] **Step 3: Write templates**
@@ -834,15 +834,15 @@ Mercury: our messaging system
 Lead with the four commands a non-technical user runs:
 
 ```
-rag init          # choose your model backend (writes rag.json)
-rag add <folder>  # index PDFs, DOCX, markdown, text
-rag serve         # open the browser UI
-rag doctor        # when something doesn't work
+rag-ladder init          # choose your model backend (writes rag.json)
+rag-ladder add <folder>  # index PDFs, DOCX, markdown, text
+rag-ladder serve         # open the browser UI
+rag-ladder doctor        # when something doesn't work
 ```
 
 Then the CLI equivalents, the config key table, the env var table, the
 optional-extras install, and a short "which recipe when" pointer back to
-`rag.md`. Keep the existing deliberate-corners section, updated.
+`recipes.md`. Keep the existing deliberate-corners section, updated.
 
 - [ ] **Step 5: Commit**
 
@@ -866,21 +866,21 @@ Expected: every check passes, old and new.
 
 ```bash
 cd /home/dinesh/repos/rag
-uv run rag --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db init --preset local
-uv run rag --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db add rag.md
-uv run rag --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db stats
-uv run rag --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db search "hybrid rerank"
-uv run rag --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db ask "which recipe covers query rewriting"
-uv run rag --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db doctor
+uv run rag-ladder --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db init --preset local
+uv run rag-ladder --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db add recipes.md
+uv run rag-ladder --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db stats
+uv run rag-ladder --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db search "hybrid rerank"
+uv run rag-ladder --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db ask "which recipe covers query rewriting"
+uv run rag-ladder --config /tmp/rag-smoke.json --db /tmp/rag-smoke.db doctor
 ```
 
 Expected: `add` reports `added 1`, `stats` reports 1 doc, `search` returns
-`rag.md`, `ask` returns an answer or `not_found` with citations — never a
+`recipes.md`, `ask` returns an answer or `not_found` with citations — never a
 fabricated answer.
 
 - [ ] **Step 3: Smoke the web UI**
 
-Start `rag serve` on an ephemeral port in the background, then health-check
+Start `rag-ladder serve` on an ephemeral port in the background, then health-check
 `/api/stats` and `/api/ask?q=` with a separate call. Expected: 200 JSON. Stop it.
 
 - [ ] **Step 4: Final commit**

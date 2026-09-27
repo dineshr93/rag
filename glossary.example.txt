@@ -1,8 +1,8 @@
 # Domain terms that must never be rewritten by the LLM. One per line.
-# The rewriter is told to preserve these exactly (rag.md recipe 2): exact keyword
+# The rewriter is told to preserve these exactly (recipes.md recipe 2): exact keyword
 # matching beats semantic guessing for proprietary terminology.
 #
-# Copy this file to glossary.txt (or run `rag glossary`) and edit it.
+# Copy this file to glossary.txt (or run `rag-ladder glossary`) and edit it.
 #
 # Format:  <term>: <what it means in your organisation>
 Atlas: our internal data processing framework

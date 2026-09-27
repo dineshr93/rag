@@ -1,3 +1,11 @@
+<!--
+  Attribution: This is a recipe book adapted from Rafael Pierre's article
+  "RAG Is Simpler Than You Think" (Lighthouse Newsletter, Jun 10, 2026).
+  It is NOT the original article — it is the six recipes extracted and
+  reorganized for this project. The original article remains at:
+  https://www.lighthousenewsletter.com/p/rag-is-simpler-than-you-think
+-->
+
 * * *
 
 Nowadays, most people seem to over-engineer their Retrieval Augmented Generation (RAG) stack. They jump straight to embeddings, vector databases, and reranking pipelines. Meanwhile, their users just want to find the doc that says _“How to reset my password.”_

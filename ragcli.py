@@ -467,7 +467,7 @@ def write_glossary(flag_path=None):
     """Write the example template, and the configured glossary if it's missing."""
     body = (
         "# Domain terms that must never be rewritten by the LLM. One per line.\n"
-        "# The rewriter is told to preserve these exactly (rag.md recipe 2).\n"
+        "# The rewriter is told to preserve these exactly (recipes.md recipe 2).\n"
         "Atlas: our internal data processing framework\n"
         "Mercury: our messaging system\n"
     )
@@ -500,7 +500,7 @@ def _print_answer(out):
 def _main(argv=None):
     import argparse
 
-    p = argparse.ArgumentParser(prog="rag", description="rag.md recipes, ladder-first")
+    p = argparse.ArgumentParser(prog="rag-ladder", description="6 RAG recipes, ladder-first")
     p.add_argument("--config", default=None, help="config file (default rag.json, env RAG_CONFIG)")
     p.add_argument("--db", default=None, help="SQLite file (default rag.db, env RAG_DB)")
     p.add_argument("--corpus", default=None, help="root folder for document ids (default .)")

@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rag"
+name = "rag-ladder"
 version = "0.1.0"
-description = "rag.md recipes, ladder-first: BM25 full-text, LLM query rewriting, hybrid retrieval on SQLite FTS5"
+description = "6 RAG recipes, ladder-first: BM25 full-text, LLM query rewriting, hybrid retrieval on SQLite FTS5"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
@@ -18,4 +18,4 @@ docs = ["pypdf>=4", "python-docx>=1"]
 py-modules = ["rag", "ragcli"]
 
 [project.scripts]
-rag = "ragcli:main"
+rag-ladder = "ragcli:main"
