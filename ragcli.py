@@ -500,13 +500,20 @@ def _print_answer(out):
 def _main(argv=None):
     import argparse
 
-    p = argparse.ArgumentParser(prog="rag-ladder", description="6 RAG recipes, ladder-first")
+    p = argparse.ArgumentParser(
+        prog="rag-ladder",
+        description=(
+            "6 RAG recipes, ladder-first\n"
+            f"version {rag.VERSION} (built {rag.BUILD_DATE})"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--config", default=None, help="config file (default rag.json, env RAG_CONFIG)")
     p.add_argument("--db", default=None, help="SQLite file (default rag.db, env RAG_DB)")
     p.add_argument("--corpus", default=None, help="root folder for document ids (default .)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--no-llm", action="store_true", help="force deterministic rewriting")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     i = sub.add_parser("init", help="choose your model backend, write the config file")
     i.add_argument("--preset", default=None, choices=sorted(PRESETS))
@@ -555,6 +562,10 @@ def _main(argv=None):
     args = p.parse_args(argv)
     CFG.clear()
     CFG.update(load_config(args.config))
+
+    if args.cmd is None:
+        p.print_help()
+        return 0
 
     if args.cmd == "init":
         return init(args.config, args.preset, args.model, args.key)

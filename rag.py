@@ -21,10 +21,38 @@ import sqlite3
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from importlib import metadata
 
 import numpy as np
 
 EMBED_DIM = 512
+
+
+def _get_version():
+    """Return the installed package version, falling back to the pyproject default."""
+    try:
+        return metadata.version("rag-ladder")
+    except metadata.PackageNotFoundError:
+        return "0.1.1"
+
+
+def _get_build_date():
+    """Return the install/build date from the dist-info directory mtime."""
+    try:
+        import site
+        for p in site.getsitepackages():
+            dist_info = os.path.join(p, "rag_ladder-0.1.1.dist-info")
+            if os.path.isdir(dist_info):
+                mtime = os.path.getmtime(dist_info)
+                return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        pass
+    return "unknown"
+
+
+VERSION = _get_version()
+BUILD_DATE = _get_build_date()
 
 CFG = {}  # rag.json contents, loaded by ragcli at startup; env vars still win
 
