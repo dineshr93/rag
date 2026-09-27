@@ -1,0 +1,174 @@
+name: Publish Python Package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        cache-dependency-path: '**/pyproject.toml'
+
+    - name: Install uv
+      run: |
+        pip install uv
+
+    - name: Install dependencies with uv
+      run: |
+        uv pip install -e ".[docs]"
+
+    - name: Build package with uv
+      run: |
+        uv build
+
+    - name: Get tag version
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        VERSION_CLEAN=${VERSION#v}
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "VERSION_CLEAN=$VERSION_CLEAN" >> $GITHUB_OUTPUT
+        echo "Tag version: $VERSION"
+        echo "Clean version: $VERSION_CLEAN"
+
+    - name: Get previous tag
+      id: prevtag
+      run: |
+        PREV_TAG=$(git describe --tags --abbrev=0 $(git describe --tags --abbrev=0 2>/dev/null)^ 2>/dev/null || echo "")
+        echo "PREV_TAG=$PREV_TAG" >> $GITHUB_OUTPUT
+        echo "Previous tag: $PREV_TAG"
+
+    - name: Generate release notes
+      id: releasenotes
+      run: |
+        VERSION=${{ steps.version.outputs.VERSION }}
+        VERSION_CLEAN=${{ steps.version.outputs.VERSION_CLEAN }}
+        PREV_TAG=${{ steps.prevtag.outputs.PREV_TAG }}
+
+        echo "# Release $VERSION" > release_notes.md
+        echo "" >> release_notes.md
+        echo "**Release Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> release_notes.md
+        echo "" >> release_notes.md
+
+        if [ -n "$PREV_TAG" ]; then
+          echo "## Changes since $PREV_TAG" >> release_notes.md
+          echo "" >> release_notes.md
+
+          echo "### Commit Count" >> release_notes.md
+          COMMIT_COUNT=$(git rev-list --count $PREV_TAG..HEAD)
+          echo "$COMMIT_COUNT commit(s)" >> release_notes.md
+          echo "" >> release_notes.md
+
+          echo "### Commit Details" >> release_notes.md
+          echo "" >> release_notes.md
+          git log $PREV_TAG..HEAD --pretty=format:"- %s (%h) by @%an" >> release_notes.md
+          echo "" >> release_notes.md
+
+          echo "### Files Changed" >> release_notes.md
+          echo "" >> release_notes.md
+          git diff --name-only $PREV_TAG..HEAD | while read file; do
+            ADDITIONS=$(git diff $PREV_TAG..HEAD -- "$file" | grep -c "^+" || echo "0")
+            DELETIONS=$(git diff $PREV_TAG..HEAD -- "$file" | grep -c "^-" || echo "0")
+            echo "- **$file**: +$ADDITIONS -$DELETIONS" >> release_notes.md
+          done
+          echo "" >> release_notes.md
+        else
+          echo "## Initial Release" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "This is the first release of rag-ladder." >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Total Commits" >> release_notes.md
+          echo "$(git rev-list --count HEAD) commit(s)" >> release_notes.md
+          echo "" >> release_notes.md
+        fi
+
+        echo "## Build Artifacts" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "The following Python packages are available for download:" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "| Platform | File Name |" >> release_notes.md
+        echo "|----------|-----------|" >> release_notes.md
+        echo "| Cross-platform | rag_ladder-${{ steps.version.outputs.VERSION_CLEAN }}.whl |" >> release_notes.md
+        echo "| Cross-platform | rag_ladder-${{ steps.version.outputs.VERSION_CLEAN }}.tar.gz |" >> release_notes.md
+        echo "" >> release_notes.md
+
+        echo "### Prerequisites" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "- Python 3.10+" >> release_notes.md
+        echo "- pip" >> release_notes.md
+        echo "" >> release_notes.md
+
+        echo "### Usage" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "Install from PyPI:" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "pip install rag-ladder" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "Or install from the released wheel:" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "1. Download the wheel file from the release assets" >> release_notes.md
+        echo "2. Open a terminal/command prompt" >> release_notes.md
+        echo "3. Navigate to the directory containing the downloaded wheel file" >> release_notes.md
+        echo "4. Run the following command:" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "pip install rag_ladder-${{ steps.version.outputs.VERSION_CLEAN }}.whl" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "For example, if you downloaded the file to your Downloads folder on Windows:" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "cd ~/Downloads" >> release_notes.md
+        echo "pip install rag_ladder-${{ steps.version.outputs.VERSION_CLEAN }}.whl" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "On macOS/Linux, if downloaded to the default download location:" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "cd ~/Downloads" >> release_notes.md
+        echo "pip install rag_ladder-${{ steps.version.outputs.VERSION_CLEAN }}.whl" >> release_notes.md
+        echo "```" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "Note: The wheel file is cross-platform and works on Windows, macOS, and Linux." >> release_notes.md
+
+        cat release_notes.md
+
+    - name: Find wheel file
+      id: find-wheel
+      run: |
+        WHEEL_FILE=$(ls ./dist/rag_ladder-*.whl | head -n 1)
+        echo "WHEEL_FILE=$WHEEL_FILE" >> $GITHUB_ENV
+        echo "Found wheel: $WHEEL_FILE"
+
+    - name: Find source file
+      id: find-source
+      run: |
+        SOURCE_FILE=$(ls ./dist/rag_ladder-*.tar.gz | head -n 1)
+        echo "SOURCE_FILE=$SOURCE_FILE" >> $GITHUB_ENV
+        echo "Found source: $SOURCE_FILE"
+
+    - name: Create and publish release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: Release ${{ steps.version.outputs.VERSION }}
+        body_path: release_notes.md
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        files: |
+          ./dist/rag_ladder-*.whl
+          ./dist/rag_ladder-*.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
