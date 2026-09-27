@@ -649,8 +649,8 @@ def recommend(
         return _rec(1, "no search at all — build BM25 first, stop reading and build it")
     if satisfied:
         return _rec(None, "users are happy with the baseline — stop and ship features")
-    c = complaint.lower()
-    if "can't find" in c or "cannot find" in c or "exist" in c:
+    c = complaint.lower().replace("'", "")
+    if "cant find" in c or "cannot find" in c or "exist" in c:
         return _rec(2, "vocabulary mismatch, not retrieval — LLM rewriting is ~$0.001/query and zero re-indexing")
     if "not great" in c or "okay" in c or "semantic" in c:
         if not latency_ok:
