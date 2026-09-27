@@ -89,6 +89,33 @@ Add `--json` to `search ask hybrid multi hot pre stats` for scripting.
 Exit codes: `0` ok, `1` runtime failure, `2` bad input or missing extractor,
 `3` empty corpus (the message tells you to run `rag add`).
 
+## Decision tree
+
+`rag recommend` picks the next recipe for you. It needs two numbers and a
+complaint:
+
+    rag recommend --qpd 500 --churn 2 --complaint "can't find docs"
+
+| Flag | Meaning | How to estimate |
+|---|---|---|
+| `--qpd` | **Queries per day** — how many searches your users make | Count `rag ask`/`rag search` calls in a day, or estimate from traffic |
+| `--churn` | **Corpus churn %/day** — how many documents change daily | Adding 50 docs to a 500-doc corpus = `--churn 10` |
+| `--complaint` | What's wrong with the BM25 results | "can't find", "not great", "okay" |
+
+The tree's answer tells you the next rung to build:
+
+| Complaint | Condition | Next recipe |
+|---|---|---|
+| "can't find" | vocabulary mismatch | **2** — LLM query rewriting |
+| "not great" / "okay" | low latency OK, low churn | **3** — hybrid BM25 + embedding rerank |
+| "not great" | churn >10%/day | **4** — embed candidates on the fly |
+| "not great" | Pareto access (hot 20%) | **5** — hot/cold tiers |
+| "not great" | >100K docs, >10K qpd, ML team | **6** — full pre-embedding |
+| (satisfied) | users happy | **stop** — ship features |
+
+Run it after `rag add`, before you write any code. It returns `None` when
+recipe 1 + 2 are enough — that's the target for ~60% of systems.
+
 ## Config
 
 `rag init` writes `rag.json` (see `rag.example.json`). Every key is optional.
