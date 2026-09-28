@@ -21,7 +21,6 @@ import sqlite3
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from importlib import metadata
 
 import numpy as np
@@ -37,23 +36,7 @@ def _get_version():
         return "0.1.1"
 
 
-def _get_build_date():
-    """Return the install/build date from the dist-info directory mtime. The
-    directory is found via the installed metadata, not a name built from a
-    version literal — those hardcodings go stale at every version bump."""
-    try:
-        for dist in metadata.distributions():
-            path = getattr(dist, "_path", None)
-            if path and dist.name == "rag-ladder" and os.path.isdir(path):
-                mtime = os.path.getmtime(path)
-                return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    except Exception:
-        pass
-    return "unknown"
-
-
 VERSION = _get_version()
-BUILD_DATE = _get_build_date()
 
 CFG = {}  # rag.json contents, loaded by ragcli at startup; env vars still win
 

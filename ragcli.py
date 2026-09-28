@@ -524,7 +524,7 @@ def _main(argv=None):
         prog="rag-ladder",
         description=(
             "6 RAG recipes, ladder-first\n"
-            f"version {rag.VERSION} (built {rag.BUILD_DATE})"
+            f"version {rag.VERSION}"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
