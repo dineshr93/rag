@@ -10,7 +10,6 @@
   "corpus": ".",
   "glossary": "glossary.txt",
   "answer_mode": "general",
-  "answer_max_chars": 2000,
   "serve_host": "127.0.0.1",
   "serve_port": 8765
 }

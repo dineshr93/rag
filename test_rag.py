@@ -274,11 +274,13 @@ def test_answer_sends_the_matching_window_not_the_head():
         return "Die Miete betraegt 900 EUR netto pro Monat [1]."
 
     orig = rag.llm
+    rag.CFG["answer_max_chars"] = "2000"  # the default cap is now dynamic; windowing is the override path
     try:
         rag.llm = spy
         out = r.answer("wie hoch ist die Miete 900 EUR", k=1)
     finally:
         rag.llm = orig
+        rag.CFG.pop("answer_max_chars", None)
     assert out["status"] == "ok", out
     assert "900 EUR" in seen["sources"], seen["sources"][:400]
     assert len(seen["sources"]) < 2400  # a window, not the whole ~21k-char document
@@ -286,6 +288,18 @@ def test_answer_sends_the_matching_window_not_the_head():
     assert c["chars"] == len(r.doc("lease"))
     assert c["sent"] <= rag._answer_budget() < c["chars"], c
     assert [t["id"] for t in out["truncated"]] == ["lease"], out["truncated"]
+
+
+def test_answer_budget_default_grows_with_the_corpus():
+    """No config key to hunt for: the biggest document fits whole by default."""
+    import rag
+
+    r = _rag()
+    rag.CFG.pop("answer_max_chars", None)
+    big = "x" * 5000
+    r.add("big", big)
+    assert rag._answer_budget(r.db) == 5000
+    assert rag._answer_budget() == 2000  # no connection: the floor
 
 
 def test_answer_short_doc_is_not_truncated():

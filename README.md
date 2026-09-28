@@ -140,7 +140,7 @@ recipe 1 + 2 are enough — that's the target for ~60% of systems.
 | `corpus` | `.` | root folder document ids are relative to |
 | `glossary` | `glossary.txt` | domain terms never rewritten |
 | `answer_mode` | `general` | `general` or `legal` (stricter, quotes clauses) |
-| `answer_max_chars` | `2000` | how much of each retrieved document the answer is built from — the regions matching the question, not the head; costs `k ×` this in the prompt |
+| `answer_max_chars` | auto | optional cap: how much of each retrieved document the answer is built from — the regions matching the question, not the head; costs `k ×` this in the prompt. Default is the biggest document in the corpus, so nothing truncates until you cap it |
 | `serve_host` / `serve_port` | `127.0.0.1` / `8765` | browser UI bind |
 
 Resolution order everywhere: **CLI flag > env var > `rag.json` > default.**
