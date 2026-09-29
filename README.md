@@ -83,6 +83,7 @@ says so instead of guessing.
     rag-ladder ask "how long do refunds take?"
     rag-ladder ask --mode legal "what is the notice period?"   # quotes clauses, never infers
     rag-ladder ask --pre "when was the termination notified?"  # vector retrieval + cited answer
+    rag-ladder ask --pre --min-score 0.3 "query"   # skip docs scoring below 0.3
     rag-ladder search "invoice #12345"       # recipe 1, raw BM25 hits
     rag-ladder hybrid "alternatives to X"    # recipe 3/4
     rag-ladder multi "read csv, clean, plot"

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-ladder"
-version = "0.1.6"
+version = "0.1.7"
 description = "6 RAG recipes, ladder-first: BM25 full-text, LLM query rewriting, hybrid retrieval on SQLite FTS5"
 requires-python = ">=3.10"
 readme = "README.md"

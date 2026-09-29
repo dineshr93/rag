@@ -445,7 +445,7 @@ class Rag:
                 out.append(h)
         return out[:k]
 
-    def answer(self, query, k=6, mode=None, pre=False):
+    def answer(self, query, k=6, mode=None, pre=False, min_score=0.0):
         """Retrieval + synthesis with citations. Never invents an answer: with no
         model it returns the passages and says so, and a NOT_FOUND reply from the
         model is surfaced as status='not_found', not smoothed over.
@@ -456,7 +456,10 @@ class Rag:
         deep in a file is a visible tradeoff instead of a mystery.
 
         pre=True: retrieve from stored vectors (recipe 6) instead of BM25. Requires
-        a prior `preembed()` call; falls back to BM25 if no vectors exist."""
+        a prior `preembed()` call; falls back to BM25 if no vectors exist.
+        min_score: drop hits scoring below this before sending to the LLM.
+        0.0 (default) sends all top-k; raise it to avoid burning tokens on
+        irrelevant docs (e.g. 0.3 for cosine similarity)."""
         mode = mode or CFG.get("answer_mode", "general")
         if pre:
             hits = self.search_preembedded(query, k=k)
@@ -464,6 +467,8 @@ class Rag:
                 hits = self.retrieve(query, k=k)
         else:
             hits = self.retrieve(query, k=k)
+        if min_score > 0:
+            hits = [h for h in hits if h.get("score", h.get("sem", 0.0)) >= min_score]
         cites = [
             {
                 "n": i + 1,
