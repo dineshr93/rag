@@ -445,7 +445,7 @@ class Rag:
                 out.append(h)
         return out[:k]
 
-    def answer(self, query, k=6, mode=None):
+    def answer(self, query, k=6, mode=None, pre=False):
         """Retrieval + synthesis with citations. Never invents an answer: with no
         model it returns the passages and says so, and a NOT_FOUND reply from the
         model is surfaced as status='not_found', not smoothed over.
@@ -453,9 +453,17 @@ class Rag:
         Each document is sent as its matching regions, not its first screenful (see
         _spans). Every citation says how much of itself was sent, and a truncated
         document is listed under 'truncated' — so an answer that misses something
-        deep in a file is a visible tradeoff instead of a mystery."""
+        deep in a file is a visible tradeoff instead of a mystery.
+
+        pre=True: retrieve from stored vectors (recipe 6) instead of BM25. Requires
+        a prior `preembed()` call; falls back to BM25 if no vectors exist."""
         mode = mode or CFG.get("answer_mode", "general")
-        hits = self.retrieve(query, k=k)
+        if pre:
+            hits = self.search_preembedded(query, k=k)
+            if not hits:
+                hits = self.retrieve(query, k=k)
+        else:
+            hits = self.retrieve(query, k=k)
         cites = [
             {
                 "n": i + 1,

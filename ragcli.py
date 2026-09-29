@@ -557,6 +557,8 @@ def _main(argv=None):
     ask.add_argument("-k", type=int, default=6)
     ask.add_argument("--mode", default=None, choices=["general", "legal"],
                      help="answer prompt; legal quotes clauses verbatim and never infers")
+    ask.add_argument("--pre", action="store_true",
+                     help="retrieve from pre-embedded vectors (recipe 6) instead of BM25")
 
     pre = sub.add_parser("pre", help="pre-embed (recipe 6); with a query, search stored vectors")
     pre.add_argument("query", nargs="?")
@@ -649,7 +651,7 @@ def _main(argv=None):
 
     q = args.query
     if args.cmd == "ask":
-        out = r_obj.answer(q, k=args.k, mode=args.mode)
+        out = r_obj.answer(q, k=args.k, mode=args.mode, pre=args.pre)
         if args.json:
             print(json.dumps(out))
         else:

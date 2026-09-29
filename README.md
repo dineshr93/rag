@@ -82,6 +82,7 @@ says so instead of guessing.
     rag-ladder add docs/                     # re-run: unchanged files are skipped
     rag-ladder ask "how long do refunds take?"
     rag-ladder ask --mode legal "what is the notice period?"   # quotes clauses, never infers
+    rag-ladder ask --pre "when was the termination notified?"  # vector retrieval + cited answer
     rag-ladder search "invoice #12345"       # recipe 1, raw BM25 hits
     rag-ladder hybrid "alternatives to X"    # recipe 3/4
     rag-ladder multi "read csv, clean, plot"
@@ -192,7 +193,7 @@ Tables: `docs` (FTS5, id + full text), `vectors` (id, vec BLOB, model),
 | 3 hybrid | `Rag.hybrid` | "okay but not great"; 100-500ms is acceptable |
 | 4 on-the-fly | `Rag.hybrid` (docs embedded per query) | churn >10%/day, or you're swapping embedding models |
 | 5 hot/cold | `Rag.search_hot_cold`, `Rag.refresh_hot` | Pareto access pattern, 100K+ docs |
-| 6 pre-embedding | `Rag.preembed`, `Rag.search_preembedded` | >10K q/day, <5% churn/month, ML team |
+| 6 pre-embedding | `Rag.preembed`, `Rag.search_preembedded`, `Rag.answer(pre=True)` | >10K q/day, <5% churn/month, ML team |
 | multi-intent | `Rag.decompose`, `Rag.search_multi_intent` | one query carrying several intents; parallel → latency is max, not sum |
 | cited answers | `Rag.answer` | every user-facing question; `answer_mode: legal` for contracts |
 
