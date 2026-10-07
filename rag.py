@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -29,11 +30,18 @@ EMBED_DIM = 512
 
 
 def _get_version():
-    """Return the installed package version, falling back to the pyproject default."""
+    """Return the installed package version, falling back to pyproject next to this file."""
     try:
         return metadata.version("rag-ladder")
     except metadata.PackageNotFoundError:
-        return "0.1.1"
+        pass
+    try:  # never a second hardcoded version: it rots the first time you bump
+        m = re.search(r'^version = "([^"]+)"',
+                      open(os.path.join(os.path.dirname(__file__), "pyproject.toml"),
+                           encoding="utf-8").read(), re.M)
+        return m[1] if m else "0.0.0"
+    except OSError:
+        return "0.0.0"
 
 
 VERSION = _get_version()
@@ -55,6 +63,20 @@ def _headers(key=None):
     if key:
         h["Authorization"] = "Bearer " + key
     return h
+
+
+# A dead endpoint degrades retrieval to BM25 + hashed vectors silently; one
+# stderr line per process names the real cause (401 != "no model configured").
+_warned = False
+
+
+def _warn_once(e):
+    global _warned
+    if not _warned:
+        _warned = True
+        code = getattr(e, "code", None)
+        print(f"warning: endpoint call failed ({'HTTP ' + str(code) if code else e}) "
+              "— falling back to BM25/hashed retrieval; run: rag doctor", file=sys.stderr)
 
 STOP = frozenset(
     "a an and are as at be by do does for from how i in is it my of on or the to what when where which with you your".split()
@@ -111,7 +133,8 @@ def llm(messages, model=None, max_tokens=1024, timeout=120):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 out = json.load(r)
-        except Exception:
+        except Exception as e:
+            _warn_once(e)
             return None
         choice = out["choices"][0]
         content = (choice["message"].get("content") or "").strip()
@@ -519,7 +542,8 @@ class Rag:
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = json.load(r)["data"]
             return [np.asarray(d["embedding"], dtype=np.float32) for d in data]
-        except Exception:
+        except Exception as e:
+            _warn_once(e)
             return None  # falls back to hashed vectors rather than dying mid-query
 
     def hybrid(self, query, k=10, candidates=50):

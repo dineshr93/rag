@@ -96,6 +96,23 @@ def test_llm_down_falls_back():
     assert r.decompose("a and b") == ["a", "b"]
 
 
+def test_endpoint_failure_warns_once():
+    import contextlib
+    import io
+    import rag
+
+    rag._warned = False
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            assert rag.llm([{"role": "user", "content": "hi"}]) is None  # dead port
+            assert rag.llm([{"role": "user", "content": "hi"}]) is None
+    finally:
+        rag._warned = False
+    lines = [l for l in err.getvalue().splitlines() if "warning:" in l]
+    assert len(lines) == 1 and "falling back" in lines[0], err.getvalue()
+
+
 def test_decision_tree():
     assert recommend(has_search=False)["recipe"] == 1
     assert recommend(has_search=True, satisfied=True)["recipe"] is None

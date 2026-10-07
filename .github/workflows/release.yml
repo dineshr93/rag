@@ -33,9 +33,16 @@ jobs:
       run: |
         uv pip install --system -e ".[docs]"
 
+    - name: Test before release
+      run: python test_rag.py
+
     - name: Build package with uv
       run: |
         uv build
+
+    - name: Publish to PyPI
+      if: ${{ secrets.PYPI_API_TOKEN != '' }}
+      run: uv publish --token "${{ secrets.PYPI_API_TOKEN }}"
 
     - name: Get tag version
       id: version
