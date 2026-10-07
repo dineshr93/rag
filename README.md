@@ -167,7 +167,7 @@ Two modules split at the engine/app seam:
 - `rag.py` — engine: BM25 retrieval, LLM/embed clients, whole-document storage,
   answer synthesis, `recommend()`.
 - `ragcli.py` — app layer: config, ingestion, CLI, browser UI.
-- `test_rag.py` — 28 runnable checks, no pytest, no network. `uv run test_rag.py`.
+- `test_rag.py` — runnable checks, no pytest, no network. `uv run test_rag.py`.
 
 One SQLite file. Documents are stored **whole** — no chunking, no chunk-size or
 overlap decisions, no eval harness for chunks (recipe 1's whole point). A `meta`
