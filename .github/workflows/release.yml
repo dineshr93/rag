@@ -40,10 +40,6 @@ jobs:
       run: |
         uv build
 
-    - name: Publish to PyPI
-      if: ${{ secrets.PYPI_API_TOKEN != '' }}
-      run: uv publish --token "${{ secrets.PYPI_API_TOKEN }}"
-
     - name: Get tag version
       id: version
       run: |
@@ -107,7 +103,7 @@ jobs:
 
         echo "## Build Artifacts" >> release_notes.md
         echo "" >> release_notes.md
-        echo "The following Python packages are available for download:" >> release_notes.md
+        echo "The following Python packages are attached to this release:" >> release_notes.md
         echo "" >> release_notes.md
         echo "| Platform | File Name |" >> release_notes.md
         echo "|----------|-----------|" >> release_notes.md
@@ -123,12 +119,7 @@ jobs:
 
         echo "### Usage" >> release_notes.md
         echo "" >> release_notes.md
-        echo "Install from PyPI:" >> release_notes.md
-        echo "```" >> release_notes.md
-        echo "pip install rag-ladder" >> release_notes.md
-        echo "```" >> release_notes.md
-        echo "" >> release_notes.md
-        echo "Or install from the released wheel:" >> release_notes.md
+        echo "Install from the released wheel:" >> release_notes.md
         echo "" >> release_notes.md
         echo "1. Download the wheel file from the release assets" >> release_notes.md
         echo "2. Open a terminal/command prompt" >> release_notes.md
