@@ -122,11 +122,15 @@ def llm(messages, model=None, max_tokens=1024, timeout=120):
     reasoning = _cfg("RAG_LLM_REASONING", "llm_reasoning", "auto")
     for effort, budget in ((reasoning if reasoning != "auto" else None, max_tokens), ("none", max_tokens * 2)):
         body = {
-            "model": model or _cfg("RAG_LLM_MODEL", "llm_model", "deepseek-v4.1-flash"),
             "messages": messages,
             "temperature": 0,
             "max_tokens": budget,
         }
+        # README default is "the endpoint's own model": send the field only when a
+        # name is configured, so a stale hardcoded default can't 404 every call.
+        name = model or _cfg("RAG_LLM_MODEL", "llm_model", None)
+        if name:
+            body["model"] = name
         if effort:
             body["reasoning_effort"] = effort  # sent only on retry: strict endpoints never see it
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=_headers(key))
@@ -152,7 +156,7 @@ def _embed_inputs(texts, cap=None):
     """ponytail: truncate to the model's context window — a 2048-token embedder
     returns HTTP 400 on a long document, and one bad text sank the whole batch to
     the hashed fallback. Chunk only if whole-doc truncation measurably hurts ranking."""
-    cap = int(cap if cap is not None else os.environ.get("RAG_EMBED_MAX_CHARS", "4000"))
+    cap = int(cap if cap is not None else _cfg("RAG_EMBED_MAX_CHARS", "embed_max_chars", 4000))
     return [t[:cap] for t in texts]
 
 
@@ -491,7 +495,8 @@ class Rag:
         else:
             hits = self.retrieve(query, k=k)
         if min_score > 0:
-            hits = [h for h in hits if h.get("score", h.get("sem", 0.0)) >= min_score]
+            # cosine is the documented scale; prefer sem when a rerank provided it
+            hits = [h for h in hits if h.get("sem", h.get("score", 0.0)) >= min_score]
         cites = [
             {
                 "n": i + 1,

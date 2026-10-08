@@ -479,6 +479,73 @@ def test_image_skipped_when_llm_down():
     assert "photos/notes.txt" in ids, ids
 
 
+def test_embed_max_chars_from_config_file():
+    # the rag.json key must work too, not only the env var (README promises both)
+    import rag
+
+    saved = dict(rag.CFG)
+    try:
+        rag.CFG["embed_max_chars"] = 123
+        assert _embed_inputs(["x" * 500]) == ["x" * 123]
+        os.environ["RAG_EMBED_MAX_CHARS"] = "50"
+        assert _embed_inputs(["x" * 500]) == ["x" * 50]  # env still wins
+        del os.environ["RAG_EMBED_MAX_CHARS"]
+        rag.CFG.clear()
+        assert _embed_inputs(["x" * 5000]) == ["x" * 4000]  # built-in default
+    finally:
+        rag.CFG.clear()
+        rag.CFG.update(saved)
+
+
+def test_min_score_prefers_semantic_over_bm25():
+    # docs say the threshold is cosine; a hybrid-shape hit carries both a big
+    # BM25 score and a small sem — min_score must judge the sem, not the BM25
+    r = _rag()
+    hits = [{"id": "invoice", "text": DOCS["invoice"], "score": 5.0, "sem": 0.1}]
+    r.retrieve = lambda q, k=10: list(hits)
+    out = r.answer("anything", k=1, min_score=0.3)
+    assert out["status"] == "empty", out  # 0.1 sem < 0.3 -> dropped
+    hits[0]["sem"] = 0.9
+    out = r.answer("anything", k=1, min_score=0.3)
+    assert out["status"] == "no_model" and out["citations"][0]["score"] == 0.9, out
+
+
+def test_llm_sends_model_only_when_configured():
+    # default is "the endpoint's own model": a stale hardcoded name must not
+    # ride along and 404 every call
+    import io
+    import json as _json
+    import rag
+
+    captured = []
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(_json.loads(req.data))
+        return FakeResp(_json.dumps(
+            {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}).encode())
+
+    real = rag.urllib.request.urlopen
+    saved = dict(rag.CFG)
+    try:
+        rag.urllib.request.urlopen = fake_urlopen
+        rag.CFG.clear()
+        assert rag.llm([{"role": "user", "content": "q"}]) == "hi"
+        assert "model" not in captured[-1], captured[-1]
+        rag.CFG["llm_model"] = "cfg-model"
+        rag.llm([{"role": "user", "content": "q"}])
+        assert captured[-1]["model"] == "cfg-model", captured[-1]
+    finally:
+        rag.urllib.request.urlopen = real
+        rag.CFG.clear()
+        rag.CFG.update(saved)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
