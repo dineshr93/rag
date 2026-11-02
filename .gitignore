@@ -7,3 +7,5 @@ build/
 rag.db
 rag.json
 .env
+.metrics/
+.pytest_cache/
