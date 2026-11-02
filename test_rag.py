@@ -225,6 +225,104 @@ def test_add_incremental():
     assert r.doc("d") == "changed text"
 
 
+def test_cli_version():
+    import ragcli
+
+    try:
+        ragcli._build_parser().parse_args(["--version"])
+    except SystemExit as e:
+        assert e.code == 0, e.code
+    else:
+        raise AssertionError("--version must exit 0")
+
+
+def test_add_missing_path_is_bad_input():
+    import ragcli
+
+    rc = ragcli.main(["add", "/nonexistent-corpus-path"])
+    assert rc == 2, rc  # documented: 2 = bad input, not silent 0
+
+
+def test_json_flag_before_and_after_subcommand():
+    import ragcli
+    import io
+    from contextlib import redirect_stdout
+
+    d = _tmpdir()
+    docs = os.path.join(d, "docs")
+    os.makedirs(docs)
+    with open(os.path.join(docs, "pw.md"), "w") as f:
+        f.write("How to reset my password.")
+    db = os.path.join(d, "t.db")
+    assert ragcli.main(["--db", db, "add", docs]) == 0
+
+    for argv in (["--json", "--db", db, "search", "password"],
+                 ["--db", db, "search", "password", "--json"]):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            assert ragcli.main(argv) == 0, argv
+        assert buf.getvalue().lstrip().startswith("["), (argv, buf.getvalue())
+
+
+def test_negative_k_is_bad_input():
+    import ragcli
+
+    try:
+        ragcli._build_parser().parse_args(["search", "password", "-k", "-3"])
+    except SystemExit as e:
+        assert e.code == 2, e.code
+    else:
+        raise AssertionError("negative -k must be rejected")
+
+
+def test_json_flag_after_subcommand():
+    import ragcli
+
+    d = _tmpdir()
+    docs = os.path.join(d, "docs")
+    os.makedirs(docs)
+    with open(os.path.join(docs, "pw.md"), "w") as f:
+        f.write("How to reset my password.")
+    db = os.path.join(d, "t.db")
+    assert ragcli.main(["--db", db, "add", docs]) == 0
+    rc = ragcli.main(["--db", db, "search", "password", "--json"])
+    assert rc == 0, rc
+
+
+def test_glossary_does_not_write_a_template_in_cwd():
+    import ragcli
+
+    d = _tmpdir()
+    old = os.getcwd()
+    saved = os.environ.get("RAG_GLOSSARY")
+    os.environ["RAG_GLOSSARY"] = os.path.join(d, "g.txt")
+    try:
+        os.chdir(d)
+        ragcli.write_glossary()
+    finally:
+        os.chdir(old)
+        if saved is None:
+            os.environ.pop("RAG_GLOSSARY", None)
+        else:
+            os.environ["RAG_GLOSSARY"] = saved
+    assert os.path.exists(os.path.join(d, "g.txt"))
+    assert not os.path.exists(os.path.join(d, "glossary.example.txt")), "template must not be written into cwd"
+
+
+def test_init_preset_writes_config():
+    import ragcli
+    import json
+
+    d = _tmpdir()
+    path = os.path.join(d, "rag.json")
+    assert ragcli.init(flag_path=path, preset="ollama") == 0
+    with open(path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    assert cfg["llm_base"] == "http://127.0.0.1:11434", cfg
+    assert cfg["llm_model"] == "llama3.1:8b", cfg
+    assert ragcli.init(flag_path=path, preset="nope") == 2
+
+
 def test_walk_skips_noise():
     import ragcli
 

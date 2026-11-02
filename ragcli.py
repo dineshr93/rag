@@ -15,7 +15,6 @@ Resolution order everywhere: CLI flag > env var > rag.json > default.
 import base64
 import json
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -293,6 +292,8 @@ def walk(paths, corpus):
     out = []
     for p in paths:
         p = Path(p)
+        if not p.exists():
+            raise ExtractError(f"no such path: {p}")
         if p.is_file():
             if p.name not in SKIP_FILES:
                 out.append(p)
@@ -486,20 +487,16 @@ def stats(rag_obj, flag_path=None):
 
 
 def write_glossary(flag_path=None):
-    """Write the example template, and the configured glossary if it's missing."""
-    body = (
-        "# Domain terms that must never be rewritten by the LLM. One per line.\n"
-        "# The rewriter is told to preserve these exactly (recipes.md recipe 2).\n"
-        "Atlas: our internal data processing framework\n"
-        "Mercury: our messaging system\n"
-    )
-    for path in dict.fromkeys(["glossary.example.txt", resolve("glossary", None, "RAG_GLOSSARY", "glossary.txt")]):
-        if os.path.exists(path) and path != "glossary.example.txt":
-            print(f"{path} already exists — leaving it alone")
-            continue
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(body)
-        print(f"wrote {path}")
+    """Write the configured glossary from the repo's template; never rewrite the template."""
+    target = resolve("glossary", None, "RAG_GLOSSARY", "glossary.txt")
+    if os.path.exists(target):
+        print(f"{target} already exists — leaving it alone")
+        return 0
+    template = Path(__file__).with_name("glossary.example.txt")
+    body = template.read_text(encoding="utf-8")
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(body)
+    print(f"wrote {target} (copied glossary.example.txt)")
     return 0
 
 
@@ -586,6 +583,16 @@ def cmd_search(r_obj, cmd, q, k, as_json):
     return 0
 
 
+def _nonneg_int(value):
+    """One decision in one place: a count below zero is bad input, not a silent query."""
+    import argparse
+
+    n = int(value)
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
+    return n
+
+
 def _build_parser():
     import argparse
 
@@ -597,6 +604,7 @@ def _build_parser():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    p.add_argument("--version", action="version", version=f"rag-ladder {rag.VERSION}")
     p.add_argument("--config", default=None, help="config file (default rag.json, env RAG_CONFIG)")
     p.add_argument("--db", default=None, help="SQLite file (default rag.db, env RAG_DB)")
     p.add_argument("--corpus", default=None, help="root folder for document ids (default .)")
@@ -619,11 +627,15 @@ def _build_parser():
     for name in ("search", "hybrid", "multi", "hot"):
         s = sub.add_parser(name)
         s.add_argument("query")
-        s.add_argument("-k", type=int, default=5)
+        s.add_argument("-k", type=_nonneg_int, default=5)
+        s.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="machine-readable output")
 
     ask = sub.add_parser("ask", help="cited answer from your documents")
     ask.add_argument("query")
-    ask.add_argument("-k", type=int, default=6)
+    ask.add_argument("-k", type=_nonneg_int, default=6)
+    ask.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                     help="machine-readable output")
     ask.add_argument("--mode", default=None, choices=["general", "legal"],
                      help="answer prompt; legal quotes clauses verbatim and never infers")
     ask.add_argument("--pre", action="store_true",
@@ -633,19 +645,23 @@ def _build_parser():
 
     pre = sub.add_parser("pre", help="pre-embed (recipe 6); with a query, search stored vectors")
     pre.add_argument("query", nargs="?")
-    pre.add_argument("-k", type=int, default=5)
+    pre.add_argument("-k", type=_nonneg_int, default=5)
+    pre.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                     help="machine-readable output")
 
     sv = sub.add_parser("serve", help="browser UI on a local port")
     sv.add_argument("--host", default=None)
-    sv.add_argument("--port", type=int, default=None)
+    sv.add_argument("--port", type=_nonneg_int, default=None)
 
-    sub.add_parser("stats", help="corpus and index sizes")
+    st = sub.add_parser("stats", help="corpus and index sizes")
+    st.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                    help="machine-readable output")
     sub.add_parser("glossary", help="write the glossary template")
 
     r = sub.add_parser("recommend", help="run the decision tree")
-    r.add_argument("--qpd", type=int, default=0)
+    r.add_argument("--qpd", type=_nonneg_int, default=0)
     r.add_argument("--churn", type=float, default=0.0, help="%% of docs changed per day")
-    r.add_argument("--corpus-size", type=int, default=0)
+    r.add_argument("--corpus-size", type=_nonneg_int, default=0)
     r.add_argument("--complaint", default="")
     r.add_argument("--ml", action="store_true")
     r.add_argument("--hot-patterns", action="store_true")
