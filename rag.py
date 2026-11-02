@@ -269,6 +269,22 @@ def _word(term):
     return re.compile(r"(?<!\w)" + re.escape(term) + r"(?!\w)", re.IGNORECASE)
 
 
+def _windows(text, terms, ctx=WIN_CTX):
+    """Merge +/-ctx windows around every occurrence of each term, in reading order.
+    Returns [] when nothing matches."""
+    wins = []
+    for t in sorted(terms):
+        for m in _word(t).finditer(text):
+            wins.append((max(0, m.start() - ctx), min(len(text), m.end() + ctx)))
+    merged = []
+    for s, e in sorted(wins):
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return merged
+
+
 def _spans(text, query, cap, ctx=WIN_CTX):
     """The part of a document to send to a model, as one string.
 
@@ -286,18 +302,9 @@ def _spans(text, query, cap, ctx=WIN_CTX):
     if not terms:
         return text[:cap]
     freq = {t: max(1, len(_word(t).findall(text))) for t in terms}
-    wins = []
-    for t in sorted(terms):
-        for m in _word(t).finditer(text):
-            wins.append((max(0, m.start() - ctx), min(len(text), m.end() + ctx)))
-    if not wins:
+    merged = _windows(text, terms, ctx)
+    if not merged:
         return text[:cap]
-    merged = []
-    for s, e in sorted(wins):
-        if merged and s <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e])
     ranked = []
     for s, e in merged:
         piece = text[s:e]
@@ -670,6 +677,23 @@ class Rag:
 
 
 # --------------------------------------------------------------------------- decision tree
+def _pick_complaint(c, latency_ok, churn_pct_day, corpus, qpd, ml_team, hot_patterns):
+    """The complaint tiers, in the original precedence order. Returns a recipe or None."""
+    if "cant find" in c or "cannot find" in c or "exist" in c:
+        return _rec(2, "vocabulary mismatch, not retrieval — LLM rewriting is ~$0.001/query and zero re-indexing")
+    if "not great" in c or "okay" in c or "semantic" in c:
+        if not latency_ok:
+            return _rec(2, "100-500ms rerank isn't worth it here — push query rewriting further instead")
+        if churn_pct_day > 10:
+            return _rec(4, "high churn (>10%/day) — embed candidates on-the-fly, nothing to re-index")
+        if hot_patterns:
+            return _rec(5, "Pareto access pattern — pre-embed the hot 20%, embed cold on the fly")
+        if corpus > 100_000 and qpd > 10_000 and ml_team:
+            return _rec(6, "stable corpus + >10K q/day + ML team — full pre-embedding with ANN")
+        return _rec(3, "hybrid: BM25 candidates, embedding rerank, top-k")
+    return None
+
+
 def recommend(
     has_search=False,
     satisfied=None,
@@ -687,18 +711,9 @@ def recommend(
     if satisfied:
         return _rec(None, "users are happy with the baseline — stop and ship features")
     c = complaint.lower().replace("'", "")
-    if "cant find" in c or "cannot find" in c or "exist" in c:
-        return _rec(2, "vocabulary mismatch, not retrieval — LLM rewriting is ~$0.001/query and zero re-indexing")
-    if "not great" in c or "okay" in c or "semantic" in c:
-        if not latency_ok:
-            return _rec(2, "100-500ms rerank isn't worth it here — push query rewriting further instead")
-        if churn_pct_day > 10:
-            return _rec(4, "high churn (>10%/day) — embed candidates on-the-fly, nothing to re-index")
-        if hot_patterns:
-            return _rec(5, "Pareto access pattern — pre-embed the hot 20%, embed cold on the fly")
-        if corpus > 100_000 and qpd > 10_000 and ml_team:
-            return _rec(6, "stable corpus + >10K q/day + ML team — full pre-embedding with ANN")
-        return _rec(3, "hybrid: BM25 candidates, embedding rerank, top-k")
+    hit = _pick_complaint(c, latency_ok, churn_pct_day, corpus, qpd, ml_team, hot_patterns)
+    if hit:
+        return hit
     if qpd > 10_000 and corpus > 100_000 and ml_team and churn_pct_day < 5:
         return _rec(6, "very high volume, stable corpus, ML team to run the index")
     if churn_pct_day > 10:
