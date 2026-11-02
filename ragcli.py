@@ -118,30 +118,41 @@ class ExtractError(Exception):
     pass
 
 
+def _extract_pdf(path):
+    try:
+        import pypdf
+    except ImportError:
+        raise ExtractError("PDF needs pypdf — run: uv add pypdf") from None
+    try:
+        return "\n".join((pg.extract_text() or "") for pg in pypdf.PdfReader(path).pages)
+    except Exception as e:  # a corrupt or encrypted PDF must not kill the batch
+        raise ExtractError(f"could not read {path}: {e}") from None
+
+
+def _extract_docx(path):
+    try:
+        import docx
+    except ImportError:
+        raise ExtractError("DOCX needs python-docx — run: uv add python-docx") from None
+    try:
+        return "\n".join(p.text for p in docx.Document(path).paragraphs)
+    except Exception as e:
+        raise ExtractError(f"could not read {path}: {e}") from None
+
+
 def extract(path):
     """File -> text. Extractors stay optional; a missing one names its install
     command instead of raising a traceback."""
     ext = Path(path).suffix.lower()
     if ext in TEXT_EXT:
-        return Path(path).read_text(encoding="utf-8", errors="replace")
+        try:
+            return Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            raise ExtractError(f"could not read {path}: {e}") from None
     if ext == ".pdf":
-        try:
-            import pypdf
-        except ImportError:
-            raise ExtractError("PDF needs pypdf — run: uv add pypdf") from None
-        try:
-            return "\n".join((pg.extract_text() or "") for pg in pypdf.PdfReader(path).pages)
-        except Exception as e:  # a corrupt or encrypted PDF must not kill the batch
-            raise ExtractError(f"could not read {path}: {e}") from None
+        return _extract_pdf(path)
     if ext == ".docx":
-        try:
-            import docx
-        except ImportError:
-            raise ExtractError("DOCX needs python-docx — run: uv add python-docx") from None
-        try:
-            return "\n".join(p.text for p in docx.Document(path).paragraphs)
-        except Exception as e:
-            raise ExtractError(f"could not read {path}: {e}") from None
+        return _extract_docx(path)
     if ext in IMAGE_EXT:
         return describe_image(path)
     if ext in VIDEO_EXT:
@@ -517,7 +528,65 @@ def _print_answer(out):
              "search the exact term (it shows the clause itself)")
 
 
-def _main(argv=None):
+def cmd_add(r_obj, paths, corpus, db):
+    added = skipped = failed = 0
+    for path in walk(paths, corpus):
+        try:
+            text = extract(path)
+        except ExtractError as e:
+            print(f"skip: {e}", file=sys.stderr)
+            failed += 1
+            continue
+        if r_obj.add(doc_id(path, corpus), text, mtime=os.path.getmtime(path)):
+            added += 1
+        else:
+            skipped += 1
+    print(f"added {added}, skipped {skipped} (unchanged), failed {failed} -> {db}")
+    return 0
+
+
+def cmd_stats(r_obj, config, as_json):
+    s = stats(r_obj, config)
+    print(json.dumps(s) if as_json else "\n".join(f"{k}: {v}" for k, v in s.items()))
+    return 0
+
+
+def cmd_serve(r_obj, host_flag, port_flag):
+    host = resolve("serve_host", host_flag, "RAG_SERVE_HOST", "127.0.0.1")
+    port = int(resolve("serve_port", port_flag, "RAG_SERVE_PORT", 8765))
+    return serve(r_obj, host, port)
+
+
+def cmd_pre_no_query(r_obj):
+    n = r_obj.preembed()
+    note = " (corpus is empty — run: rag add <path>)" if not n else ""
+    print(f"pre-embedded {n} documents{note}")
+    return 0
+
+
+def cmd_ask(r_obj, q, k, mode, pre, min_score, as_json):
+    out = r_obj.answer(q, k=k, mode=mode, pre=pre, min_score=min_score)
+    print(json.dumps(out) if as_json else _print_answer(out))
+    return 0
+
+
+def cmd_search(r_obj, cmd, q, k, as_json):
+    if cmd == "search":
+        hits = r_obj.search(q, k=k)
+    elif cmd == "hybrid":
+        hits = r_obj.hybrid(q, k=k)
+    elif cmd == "multi":
+        hits = r_obj.search_multi_intent(q, k=k)
+    elif cmd == "hot":
+        r_obj.refresh_hot()
+        hits = r_obj.search_hot_cold(q, k=k)
+    else:
+        hits = r_obj.search_preembedded(q, k=k)
+    print(json.dumps(hits) if as_json else _print_hits(hits))
+    return 0
+
+
+def _build_parser():
     import argparse
 
     p = argparse.ArgumentParser(
@@ -582,101 +651,67 @@ def _main(argv=None):
     r.add_argument("--hot-patterns", action="store_true")
     r.add_argument("--no-search", action="store_true")
     r.add_argument("--latency-ok", action=argparse.BooleanOptionalAction, default=True)
+    return p
 
-    args = p.parse_args(argv)
-    CFG.clear()
-    CFG.update(load_config(args.config))
 
+def _dispatch_meta(args, p):
+    """Commands that need no corpus: init, doctor, glossary, recommend."""
     if args.cmd is None:
         p.print_help()
         return 0
-
     if args.cmd == "init":
         return init(args.config, args.preset, args.model, args.key)
     if args.cmd == "doctor":
         return doctor(args.config, args.db)
     if args.cmd == "glossary":
         return write_glossary(args.config)
-    if args.cmd == "recommend":
-        rec = recommend(
-            has_search=not args.no_search,
-            complaint=args.complaint,
-            qpd=args.qpd,
-            churn_pct_day=args.churn,
-            corpus=args.corpus_size,
-            ml_team=args.ml,
-            hot_patterns=args.hot_patterns,
-            latency_ok=args.latency_ok,
-        )
-        print(f"recipe {rec['recipe']}: {rec['why']}")
-        return 0
+    rec = recommend(
+        has_search=not args.no_search,
+        complaint=args.complaint,
+        qpd=args.qpd,
+        churn_pct_day=args.churn,
+        corpus=args.corpus_size,
+        ml_team=args.ml,
+        hot_patterns=args.hot_patterns,
+        latency_ok=args.latency_ok,
+    )
+    print(f"recipe {rec['recipe']}: {rec['why']}")
+    return 0
 
+
+def _dispatch_corpus(args):
+    """Commands that need the corpus: add/index, stats, serve, pre, ask, search family."""
     db = resolve("db", args.db, "RAG_DB", "rag.db")
     corpus = resolve("corpus", args.corpus, "RAG_CORPUS", ".")
     r_obj = Rag(db=db, use_llm=not args.no_llm)
 
     if args.cmd in ("add", "index"):
-        added = skipped = failed = 0
-        for path in walk(args.paths, corpus):
-            try:
-                text = extract(path)
-            except ExtractError as e:
-                print(f"skip: {e}", file=sys.stderr)
-                failed += 1
-                continue
-            if r_obj.add(doc_id(path, corpus), text, mtime=os.path.getmtime(path)):
-                added += 1
-            else:
-                skipped += 1
-        print(f"added {added}, skipped {skipped} (unchanged), failed {failed} -> {db}")
-        return 0
-
+        return cmd_add(r_obj, args.paths, corpus, db)
     if args.cmd == "stats":
-        s = stats(r_obj, args.config)
-        print(json.dumps(s) if args.json else "\n".join(f"{k}: {v}" for k, v in s.items()))
-        return 0
-
+        return cmd_stats(r_obj, args.config, args.json)
     if args.cmd == "serve":
-        host = resolve("serve_host", args.host, "RAG_SERVE_HOST", "127.0.0.1")
-        port = int(resolve("serve_port", args.port, "RAG_SERVE_PORT", 8765))
-        return serve(r_obj, host, port)
-
+        return cmd_serve(r_obj, args.host, args.port)
     if args.cmd == "pre" and not args.query:
-        n = r_obj.preembed()
-        note = " (corpus is empty — run: rag add <path>)" if not n else ""
-        print(f"pre-embedded {n} documents{note}")
-        return 0
+        return cmd_pre_no_query(r_obj)
 
     if not r_obj.doc_ids():
         print("corpus is empty — run: rag add <path>", file=sys.stderr)
         return 3
 
-    q = args.query
     if args.cmd == "ask":
-        out = r_obj.answer(q, k=args.k, mode=args.mode, pre=args.pre, min_score=args.min_score)
-        if args.json:
-            print(json.dumps(out))
-        else:
-            _print_answer(out)
-        return 0
+        return cmd_ask(r_obj, args.query, args.k, args.mode, args.pre, args.min_score, args.json)
+    return cmd_search(r_obj, args.cmd, args.query, args.k, args.json)
 
-    hits = []
-    if args.cmd == "search":
-        hits = r_obj.search(q, k=args.k)
-    elif args.cmd == "hybrid":
-        hits = r_obj.hybrid(q, k=args.k)
-    elif args.cmd == "multi":
-        hits = r_obj.search_multi_intent(q, k=args.k)
-    elif args.cmd == "hot":
-        r_obj.refresh_hot()
-        hits = r_obj.search_hot_cold(q, k=args.k)
-    elif args.cmd == "pre":
-        hits = r_obj.search_preembedded(q, k=args.k)
-    if args.json:
-        print(json.dumps(hits))
-    else:
-        _print_hits(hits)
-    return 0
+
+def _main(argv=None):
+    p = _build_parser()
+    args = p.parse_args(argv)
+    CFG.clear()
+    CFG.update(load_config(args.config))
+
+    if args.cmd in (None, "init", "doctor", "glossary", "recommend"):
+        return _dispatch_meta(args, p)
+    return _dispatch_corpus(args)
 
 
 def main(argv=None):
