@@ -117,9 +117,13 @@ def test_decision_tree():
     assert recommend(has_search=False)["recipe"] == 1
     assert recommend(has_search=True, satisfied=True)["recipe"] is None
     assert recommend(has_search=True, complaint="can't find docs that exist")["recipe"] == 2
+    assert recommend(has_search=True, complaint="cannot find")["recipe"] == 2  # single term: kills or/and mutants
+    assert recommend(has_search=True, complaint="it does not exist")["recipe"] == 2
     assert recommend(has_search=True, complaint="results are okay but not great", qpd=20_000, corpus=1_000_000, ml_team=True)["recipe"] == 6
     assert recommend(has_search=True, complaint="not great", churn_pct_day=25)["recipe"] == 4
     assert recommend(has_search=True, complaint="not great", hot_patterns=True)["recipe"] == 5
+    assert recommend(has_search=True, complaint="not great", churn_pct_day=25, hot_patterns=True)["recipe"] == 4  # churn precedes hot
+    assert recommend(has_search=True, complaint="results are semantic")["recipe"] == 3
     assert recommend(has_search=True, qpd=500)["recipe"] == 1
     assert recommend(has_search=True, complaint="not great", latency_ok=False)["recipe"] == 2
 
@@ -232,6 +236,22 @@ def test_walk_skips_noise():
             f.write("x")
     got = {ragcli.doc_id(p, d) for p in ragcli.walk([d], d)}
     assert got == {"a.md", "sub/b.md"}, got
+
+
+def test_extract_unreadable_is_a_skip_not_an_abort():
+    import ragcli
+
+    d = _tmpdir()
+    p = os.path.join(d, "locked.md")
+    with open(p, "w") as f:
+        f.write("secret")
+    os.chmod(p, 0)  # unreadable: a permission error must be ExtractError, not OSError
+    try:
+        ragcli.extract(p)
+    except ragcli.ExtractError as e:
+        assert "could not read" in str(e), e
+    else:
+        raise AssertionError("unreadable text file must raise ExtractError, not OSError")
 
 
 def test_answer_no_model():
